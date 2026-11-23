@@ -1,0 +1,5 @@
+bin/
+*.sarif
+*.html
+coverage.out
+.env
