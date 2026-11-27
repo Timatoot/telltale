@@ -199,8 +199,9 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[MODIFY]` `cmd/telltale/main.go`
   - `[MODIFY]` `cmd/telltale/main_test.go`
 - **Tasks:**
-  1. [ ] Implement `internal/ingest/snapshot.go`: open target repo via `os.OpenRoot`, walk deterministically using non-following `Lstat`, skip `.git` without reading VCS metadata, reject symlinks/FIFOs/sockets/devices/other non-regular files (recording `files_skipped`), enforce budgets (≤10,000 candidate files, ≤1 MiB per file, ≤64 MiB total), copy in-budget regular `.py` files into a fresh `0700` temp directory opened as `*os.Root`, write an empty `.semgrepignore` at the snapshot root, expose sorted repo-relative POSIX paths + `SnapshotPath`→`RepoRelPath` mapping, and provide `Close()` teardown. Accept a caller-owned temp parent so verify runs can place the snapshot under the independently supervised run directory in Slice 16.
-  2. [ ] **[RISK-01 Test]** Write `internal/ingest/snapshot_test.go` explicitly testing:
+  1. [x] Implement `internal/ingest/snapshot.go`: open target repo via `os.OpenRoot`, walk deterministically using non-following `Lstat`, skip `.git` without reading VCS metadata, reject symlinks/FIFOs/sockets/devices/other non-regular files (recording `files_skipped`), enforce budgets (≤10,000 candidate files, ≤1 MiB per file, ≤64 MiB total), copy in-budget regular `.py` files into a fresh `0700` temp directory opened as `*os.Root`, write an empty `.semgrepignore` at the snapshot root, expose sorted repo-relative POSIX paths + `SnapshotPath`→`RepoRelPath` mapping, and provide `Close()` teardown. Accept a caller-owned temp parent so verify runs can place the snapshot under the independently supervised run directory in Slice 16.
+     - Abort ingestion with exit 2 if traversal exceeds 1,000,000 entries, 256 directory levels below the repository root, or a two-minute deadline.
+  2. [x] **[RISK-01 Test]** Write `internal/ingest/snapshot_test.go` explicitly testing:
      - Symlink loop (`a -> b`, `b -> a`) and symlink pointing to `/etc/passwd` (never opened, recorded as `symlink`).
      - Swap a classified file to an in-root symlink and to a FIFO before open. Use pinned directory descriptors, no-follow component opens and a nonblocking final open; verify file identity and type on the open descriptor before copying. Bound bytes actually read. Assert no substituted bytes, blocking read, or followed link.
      - Named FIFO (`syscall.Mkfifo`), Unix domain socket (`net.Listen("unix", ...)`), and unit test for char/block device `fs.FileMode` classification (recorded as `non_regular`).
@@ -208,8 +209,8 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
      - Hostile file contents copied verbatim without crashing: NUL bytes, invalid non-UTF-8 bytes, UTF-8 BOM, CRLF endings, 1 MiB single-line file.
      - Target-supplied `.semgrepignore`, `.gitignore`, and `.git/` are excluded from snapshot while snapshot root contains an empty `.semgrepignore`.
      - `Close()` removes the private `0700` temp snapshot directory completely.
-  3. [ ] Wire `ingest.CreateSnapshot` into `cmd/telltale/main.go` with `defer snap.Close()`, populating `report.Coverage.FilesScanned` and `report.Coverage.FilesSkipped`.
-  4. [ ] Update `cmd/telltale/main_test.go` to audit a fixture directory containing regular `.py` files and a symlink, asserting coverage counts and verifying snapshot temp dir removal on exit.
+  3. [x] Wire `ingest.CreateSnapshot` into `cmd/telltale/main.go` with `defer snap.Close()`, populating `report.Coverage.FilesScanned` and `report.Coverage.FilesSkipped`.
+  4. [x] Update `cmd/telltale/main_test.go` to audit a fixture directory containing regular `.py` files and a symlink, asserting coverage counts and verifying snapshot temp dir removal on exit.
 - **CLI Verification:**
   ```bash
   go test -race -count=1 ./internal/ingest/... ./cmd/telltale/... && golangci-lint run ./...

@@ -87,7 +87,7 @@ A finding **gates** when its `severity` ≥ `--fail-on` (default `high`) **and**
 | :--- | :--- | :--- |
 | `0` | **Pass** | Analysis completed, artifacts written, no gating findings, and (if `--strict`) coverage complete with no strict-failing dynamic outcomes. |
 | `1` | **Policy Violation** | One or more gating findings. |
-| `2` | **Fatal Execution Error** | Invalid CLI flags (including a rejected `--run-cmd`), unreadable repo path, missing/incompatible/crashed `opengrep`, invalid embedded rules, failed preflight (Podman not rootless/local, missing cgroup controllers, image not present locally), post-create isolation inspection mismatch, artifact write failure, or unhandled internal error. Never exits `0`. |
+| `2` | **Fatal Execution Error** | Invalid CLI flags (including a rejected `--run-cmd`), unreadable repo path, repository traversal exceeding 1,000,000 entries, 256 directory levels or two minutes, missing/incompatible/crashed `opengrep`, invalid embedded rules, failed preflight (Podman not rootless/local, missing cgroup controllers, image not present locally), post-create isolation inspection mismatch, artifact write failure, or unhandled internal error. Never exits `0`. |
 | `3` | **Strict Coverage Failure** | Only with `--strict`: `coverage_complete` is `false`, or (verify mode) any finding ended with `dynamic_status` `inconclusive` or `skipped`. `not_applicable` never triggers exit `3`. |
 
 * **Precedence:** `2` > `1` > `3` > `0`.

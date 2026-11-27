@@ -262,3 +262,67 @@ func TestRunIdenticalJSONAcrossCheckouts(t *testing.T) {
 		first = raw
 	}
 }
+
+func TestRunIngestCoverageAndCleanup(t *testing.T) {
+	repo := t.TempDir()
+	tempParent := t.TempDir()
+	outDir := t.TempDir()
+	t.Setenv("TMPDIR", tempParent)
+	if err := os.Mkdir(filepath.Join(repo, "pkg"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a.py", "pkg/b.py", "readme.txt"} {
+		if err := os.WriteFile(filepath.Join(repo, name), []byte("# fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("a.py", filepath.Join(repo, "alias.py")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Close() }()
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"audit", repo, "--json", filepath.Join(out.Name(), "report.json")}, &stdout, &stderr)
+	if code != exitPass {
+		t.Fatalf("exit %d: %s", code, &stderr)
+	}
+	raw, err := out.ReadFile("report.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got model.ScanReport
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	skips := got.Coverage.FilesSkipped
+	if got.Coverage.FilesScanned != 2 || len(skips) != 1 || skips[0] != (model.SkippedFile{Path: "alias.py", Reason: model.Symlink}) || got.Summary.CoverageComplete {
+		t.Fatalf("unexpected coverage: %s", raw)
+	}
+	entries, err := os.ReadDir(tempParent)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("snapshot cleanup: %v, %v", entries, err)
+	}
+}
+
+func TestRunTraversalLimitExitsTwoBeforeReport(t *testing.T) {
+	repo, scratch, out := t.TempDir(), t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", scratch)
+	if err := os.MkdirAll(filepath.Join(repo, strings.Repeat("d/", 257)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"audit", repo, "--json", filepath.Join(out, "report.json")}, &stdout, &stderr)
+	if code != exitFatalError || stdout.Len() != 0 || !strings.Contains(stderr.String(), "depth limit") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, &stdout, &stderr)
+	}
+	for _, dir := range []string{scratch, out} {
+		entries, err := os.ReadDir(dir)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("failed audit cleanup: %v, %v", entries, err)
+		}
+	}
+}

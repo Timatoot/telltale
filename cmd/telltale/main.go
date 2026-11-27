@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/Timatoot/telltale/internal/config"
+	"github.com/Timatoot/telltale/internal/ingest"
 	"github.com/Timatoot/telltale/internal/model"
 	"github.com/Timatoot/telltale/internal/report"
 )
@@ -33,7 +35,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitFatalError
 	}
 
-	repoName, err := validateRepoDir(cfg.RepoPath)
+	repoName, err := repositoryName(cfg.RepoPath)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
+		return exitFatalError
+	}
+
+	coverage, err := ingestCoverage(context.Background(), cfg.RepoPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
@@ -44,7 +52,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			SchemaVersion: model.SchemaVersion,
 			Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none"},
 			Target:        model.Target{RepoName: repoName, Mode: "static"},
-			Summary:       model.Summary{CoverageComplete: true, PolicyPassed: true, AnalysisExitCode: exitPass},
+			Coverage:      coverage,
+			Summary:       model.Summary{CoverageComplete: len(coverage.FilesSkipped) == 0, PolicyPassed: true, AnalysisExitCode: exitPass},
 		}
 		payload, err := report.RenderJSON(&scan, "")
 		if err != nil {
@@ -75,37 +84,16 @@ func rejectUnfinishedModes(cfg config.Config) error {
 	return nil
 }
 
-func validateRepoDir(repoPath string) (string, error) {
-	info, err := os.Stat(repoPath)
+func ingestCoverage(ctx context.Context, repoPath string) (_ model.Coverage, err error) {
+	snap, err := ingest.CreateSnapshot(ctx, repoPath, "")
 	if err != nil {
-		return "", fmt.Errorf("stat repository path: %w", err)
+		return model.Coverage{}, err
 	}
-	if !info.IsDir() {
-		return "", errors.New("repository path is not a directory")
-	}
+	defer func() { err = errors.Join(err, snap.Close()) }()
+	return model.Coverage{FilesScanned: len(snap.Files), FilesSkipped: snap.FilesSkipped}, nil
+}
 
-	// Verify directory readability via os.Root without traversing its contents.
-	root, err := os.OpenRoot(repoPath)
-	if err != nil {
-		return "", fmt.Errorf("open repository directory: %w", err)
-	}
-	defer func() {
-		_ = root.Close()
-	}()
-
-	f, err := root.Open(".")
-	if err != nil {
-		return "", fmt.Errorf("open repository root: %w", err)
-	}
-	_, readErr := f.Readdirnames(1)
-	closeErr := f.Close()
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return "", fmt.Errorf("read repository directory: %w", readErr)
-	}
-	if closeErr != nil {
-		return "", fmt.Errorf("close repository directory: %w", closeErr)
-	}
-
+func repositoryName(repoPath string) (string, error) {
 	absPath, err := filepath.Abs(repoPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve repository directory: %w", err)

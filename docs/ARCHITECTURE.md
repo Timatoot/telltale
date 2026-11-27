@@ -134,6 +134,7 @@ Top-level object fields:
 
 #### Repository Snapshot Boundary
 * Ingest budgets: ≤ 10,000 candidate files, ≤ 1 MiB per file, ≤ 64 MiB total. Symlinks, FIFOs, sockets, and devices are never opened and are recorded in `files_skipped`.
+* Traversal has a separate budget of 1,000,000 directory entries, 256 levels below the repository root and two minutes. The walker checks the deadline between directory batches and entries. Exceeding a traversal limit discards the partial snapshot and exits `2`.
 * The snapshot is a fresh `0700` temp dir. It contains only copied `.py` files at their repo-relative paths plus one empty `.semgrepignore` at its root, which neutralizes Opengrep's built-in default ignore list. It contains no `.git`, no ignore files from the target, and no other target files.
 * Tree-sitter and Opengrep both read only the snapshot, which eliminates file-set divergence and TOCTOU between engines. Snapshot paths are mapped back to repo-relative paths in all output. The snapshot is removed on exit.
 
