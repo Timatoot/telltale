@@ -55,7 +55,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 			Target:        model.Target{RepoName: repoName, Mode: "static"},
 			Coverage:      coverage,
 			Inventory:     inventory,
-			Summary:       model.Summary{CoverageComplete: len(coverage.FilesSkipped) == 0 && len(coverage.ParseErrors) == 0, PolicyPassed: true, AnalysisExitCode: exitPass},
+			Summary: model.Summary{
+				CoverageComplete: len(coverage.FilesSkipped) == 0 && len(coverage.ParseErrors) == 0 && len(coverage.UnresolvedRegistrations) == 0,
+				PolicyPassed:     true, AnalysisExitCode: exitPass,
+			},
 		}
 		payload, err := report.RenderJSON(&scan, "")
 		if err != nil {
@@ -99,7 +102,9 @@ func scanPython(ctx context.Context, repoPath string) (_ []model.ToolFact, _ mod
 	return result.Tools, model.Coverage{
 		FilesScanned: len(snap.Files), FilesSkipped: snap.FilesSkipped,
 		ToolsDiscovered: len(result.Tools), ParseErrors: result.ParseErrors,
-		UnresolvedDescriptions: result.UnresolvedDescriptions,
+		UnresolvedDescriptions:  result.UnresolvedDescriptions,
+		UnresolvedRegistrations: result.UnresolvedRegistrations,
+		AnalysisLimits:          model.AnalysisLimits{CrossFileHelperCalls: result.CrossFileHelperCalls},
 	}, nil
 }
 

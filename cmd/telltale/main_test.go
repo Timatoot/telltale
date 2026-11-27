@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -324,5 +325,49 @@ func TestRunTraversalLimitExitsTwoBeforeReport(t *testing.T) {
 		if err != nil || len(entries) != 0 {
 			t.Fatalf("failed audit cleanup: %v, %v", entries, err)
 		}
+	}
+}
+
+func TestRegistrationAndHelperCoverageInJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name, extra string
+		complete    bool
+	}{
+		{name: "helper only", complete: true},
+		{name: "unresolved registration", extra: "app.add_tool(process, name=label)\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			for file, source := range map[string]string{
+				"server.py": "from mcp.server.fastmcp import FastMCP\nimport helper\napp = FastMCP()\n@app.tool()\ndef process(): return helper.run()\n" + tc.extra,
+				"helper.py": "def run(): pass\n",
+			} {
+				if err := os.WriteFile(filepath.Join(repo, file), []byte(source), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := os.OpenRoot(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = out.Close() }()
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"audit", repo, "--json", filepath.Join(out.Name(), "report.json")}, &stdout, &stderr); code != exitPass {
+				t.Fatalf("exit %d: %s", code, &stderr)
+			}
+			raw, err := out.ReadFile("report.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var report model.ScanReport
+			if err := json.Unmarshal(raw, &report); err != nil {
+				t.Fatal(err)
+			}
+			helpers := report.Coverage.AnalysisLimits.CrossFileHelperCalls
+			if report.Summary.CoverageComplete != tc.complete || (len(report.Coverage.UnresolvedRegistrations) == 0) != tc.complete ||
+				!slices.Contains(helpers, model.HelperCall{ToolID: "py:server.py:process", CalleeModule: "helper"}) {
+				t.Fatalf("unexpected coverage: %s", raw)
+			}
+		})
 	}
 }

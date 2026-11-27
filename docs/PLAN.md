@@ -255,8 +255,9 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
 
 - **Depends on:** Slice 4
 - **Parallelizable with:** Slice 6, Slice 7, Slice 11, Slice 12
-- **Target files (7 total — 2 Modify, 5 Create):**
+- **Target files (8 total — 3 Modify, 5 Create):**
   - `[MODIFY]` `cmd/telltale/main.go`
+  - `[MODIFY]` `cmd/telltale/main_test.go`
   - `[CREATE]` `internal/extract/python/patterns.go`
   - `[CREATE]` `internal/extract/python/helpers.go`
   - `[MODIFY]` `internal/extract/python/extractor.go`
@@ -264,11 +265,12 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[CREATE]` `testdata/fixtures/coverage/edge_registrations.py`
   - `[CREATE]` `testdata/fixtures/coverage/helper_mod.py`
 - **Tasks:**
-  1. [ ] Implement `internal/extract/python/patterns.go`: support imperative `mcp.add_tool(fn, ...)` registrations, low-level MCP `Server` `@server.list_tools()` / `@server.call_tool()` patterns, dynamic/unresolvable registrations (e.g., loop registration or computed tool name → `unresolved_registrations` + `py:<path>:?<n>`), and duplicate tool names within the same file (`#2`, `#3` by byte offset) and across files.
-  2. [ ] Implement `internal/extract/python/helpers.go`: resolve local module imports (`from .helper_mod import ...`, `import helper_mod`) and detect calls from extracted tool handler bodies into sibling repository modules, recording `coverage.analysis_limits.cross_file_helper_calls` without setting `coverage_complete` to `false`.
-  3. [ ] Integrate `patterns.go` and `helpers.go` into `internal/extract/python/extractor.go`. Forward unresolved registrations and helper records into the CLI report. Only the former make coverage incomplete. Slice 10 checks both through the CLI, including a helper-only checkout with complete coverage.
-  4. [ ] Create static coverage fixtures `testdata/fixtures/coverage/edge_registrations.py` and `testdata/fixtures/coverage/helper_mod.py`.
-  5. [ ] **[RISK-02 Test]** Write `internal/extract/python/patterns_test.go` testing `add_tool(fn)`, low-level `list_tools`/`call_tool`, dynamic/unresolved registrations (`unresolved_registrations` flips `coverage_complete=false`), duplicate tool names in one file (`#2`) and across two files, and cross-file helper detection (verifying `analysis_limits.cross_file_helper_calls` is populated while `coverage_complete` remains `true`).
+  1. [x] Implement `internal/extract/python/patterns.go`: support imperative `mcp.add_tool(fn, ...)` registrations, low-level MCP `Server` `@server.list_tools()` / `@server.call_tool()` patterns, dynamic/unresolvable registrations (e.g., loop registration or computed tool name → `unresolved_registrations` + `py:<path>:?<n>`), and duplicate tool names within the same file (`#2`, `#3` by byte offset) and across files.
+  2. [x] Implement `internal/extract/python/helpers.go`: resolve local module imports (`from .helper_mod import ...`, `import helper_mod`) and detect calls from extracted tool handler bodies into sibling repository modules, recording `coverage.analysis_limits.cross_file_helper_calls` without setting `coverage_complete` to `false`.
+  3. [x] Integrate `patterns.go` and `helpers.go` into `internal/extract/python/extractor.go`. Forward unresolved registrations and helper records into the CLI report. Only the former make coverage incomplete. Slice 10 checks both through the CLI, including a helper-only checkout with complete coverage.
+  4. [x] Create static coverage fixtures `testdata/fixtures/coverage/edge_registrations.py` and `testdata/fixtures/coverage/helper_mod.py`.
+  5. [x] **[RISK-02 Test]** Write `internal/extract/python/patterns_test.go` testing `add_tool(fn)`, low-level `list_tools`/`call_tool`, dynamic/unresolved registrations (`unresolved_registrations` flips `coverage_complete=false`), duplicate tool names in one file (`#2`) and across two files, and cross-file helper detection (verifying `analysis_limits.cross_file_helper_calls` is populated while `coverage_complete` remains `true`).
+- **Low-level dispatch:** Literal entries returned by `list_tools` retain their registered names. A matching literal branch in the same server’s `call_tool` supplies the handler span. Opaque dispatch retains the declaration span and records an `unresolved_dispatch` registration gap.
 - **CLI Verification:**
   ```bash
   CGO_ENABLED=1 go test -race -count=1 ./internal/extract/... && golangci-lint run ./...

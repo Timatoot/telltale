@@ -24,9 +24,11 @@ const (
 )
 
 type Result struct {
-	Tools                  []model.ToolFact
-	ParseErrors            []model.ParseError
-	UnresolvedDescriptions []model.UnresolvedDescription
+	Tools                   []model.ToolFact
+	ParseErrors             []model.ParseError
+	UnresolvedDescriptions  []model.UnresolvedDescription
+	UnresolvedRegistrations []model.UnresolvedRegistration
+	CrossFileHelperCalls    []model.HelperCall
 }
 
 // Extract reads only the bounded, private snapshot. A file that cannot be
@@ -39,6 +41,7 @@ func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
 	if err := p.SetLanguage(sitter.NewLanguage(grammar.Language())); err != nil {
 		return Result{}, fmt.Errorf("initialize Python grammar: %w", err)
 	}
+	modules := snapshotModules(snap.Files)
 	var result Result
 	for _, path := range snap.Files {
 		if err := ctx.Err(); err != nil {
@@ -48,7 +51,7 @@ func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("read snapshot %q: %w", path, err)
 		}
-		f := sourceFile{data: data, path: path}
+		f := sourceFile{data: data, path: path, modules: modules}
 		reason := f.parse(ctx, p)
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -59,6 +62,8 @@ func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
 			})
 			continue
 		}
+		result.UnresolvedRegistrations = append(result.UnresolvedRegistrations, f.registrations...)
+		result.CrossFileHelperCalls = append(result.CrossFileHelperCalls, f.helperCalls...)
 		result.Tools = append(result.Tools, f.tools...)
 		result.UnresolvedDescriptions = append(result.UnresolvedDescriptions, f.gaps...)
 	}
@@ -66,12 +71,21 @@ func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
 }
 
 type sourceFile struct {
-	data     []byte
-	path     string
-	tools    []model.ToolFact
-	gaps     []model.UnresolvedDescription
-	ordinals map[string]int
-	expanded int
+	data          []byte
+	path          string
+	tools         []model.ToolFact
+	gaps          []model.UnresolvedDescription
+	ordinals      map[string]int
+	expanded      int
+	unknown       int
+	registrations []model.UnresolvedRegistration
+	modules       map[string]string
+	helperCalls   []model.HelperCall
+	helperRefs    []helperReference
+	bodyModules   map[uintptr]map[string]struct{}
+	handlers      []handlerUse
+	lowHandlers   map[uintptr]lowHandler
+	listings      []listedTool
 }
 
 func (f *sourceFile) parse(ctx context.Context, p *sitter.Parser) string {
@@ -116,7 +130,18 @@ func (f *sourceFile) parse(ctx context.Context, p *sitter.Parser) string {
 	f.ordinals = make(map[string]int)
 	cursor := root.Walk()
 	defer cursor.Close()
-	return f.walk(ctx, cursor, 0, &scope{names: make(map[string]string)})
+	f.bodyModules = make(map[uintptr]map[string]struct{})
+	f.lowHandlers = make(map[uintptr]lowHandler)
+	if reason := f.walk(ctx, cursor, 0, &scope{names: make(map[string]binding)}, walkState{}); reason != "" {
+		return reason
+	}
+	if !f.resolveHelpers(ctx) || !f.finishHandlers(ctx) {
+		if ctx.Err() != nil {
+			return "timeout"
+		}
+		return "resource_limit"
+	}
+	return ""
 }
 
 // A group of imports can repeat a long module prefix, and stacked decorators
@@ -127,7 +152,7 @@ func (f *sourceFile) allowExpansion(size int) bool {
 }
 
 // The cursor visits siblings in linear time and recursion stops at maxDepth.
-func (f *sourceFile) walk(ctx context.Context, c *sitter.TreeCursor, depth int, env *scope) string {
+func (f *sourceFile) walk(ctx context.Context, c *sitter.TreeCursor, depth int, env *scope, state walkState) string {
 	if depth > maxDepth {
 		return "depth_exceeded"
 	}
@@ -143,31 +168,65 @@ func (f *sourceFile) walk(ctx context.Context, c *sitter.TreeCursor, depth int, 
 	case "assignment":
 		left := n.ChildByFieldName("left")
 		if left.Kind() == "identifier" {
-			var binding string
+			var b binding
 			right := n.ChildByFieldName("right")
-			if right != nil && right.Kind() == "call" && isConstructor(env.resolve(f.text(right.ChildByFieldName("function")))) {
-				binding = serverInstance
+			if right != nil && right.Kind() == "call" {
+				constructor := env.resolve(f.text(right.ChildByFieldName("function")))
+				switch {
+				case isConstructor(constructor):
+					b.qualified = serverInstance
+				case constructor == "mcp.server.Server" || constructor == "mcp.server.lowlevel.Server" || constructor == "mcp.server.lowlevel.server.Server":
+					b.low = &lowServer{branches: make(map[string]*sitter.Node)}
+				}
 			}
-			env.names[f.text(left)] = binding
+			env.names[f.text(left)] = b
 		}
-	case "decorated_definition":
-		if !f.decorated(n, env) {
+	case "for_statement":
+		state.loop = true
+		if target := n.ChildByFieldName("left"); target.Kind() == "identifier" {
+			env.names[f.text(target)] = binding{}
+		}
+	case "while_statement", "list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression":
+		state.loop = true
+	case "call":
+		if !f.addTool(n, env, state.loop) || !f.observeHelper(n, env, state.body) {
 			return "resource_limit"
 		}
+	case "decorator":
+		if !f.decorator(n, env, state.loop) {
+			return "resource_limit"
+		}
+	case "return_statement":
+		if state.low.list && !f.listReturn(n, env, state) {
+			return "resource_limit"
+		}
+	case "block":
+		state = f.enterBlock(n, state, env)
+	case "lambda":
+		state = walkState{}
+		env = &scope{parent: env, names: make(map[string]binding)}
 	case "class_definition", "function_definition":
-		env.names[f.text(n.ChildByFieldName("name"))] = ""
-		env = &scope{parent: env, names: make(map[string]string)}
+		state = walkState{}
+		var b binding
+		if n.Kind() == "function_definition" {
+			b.fn = f.function(n, env)
+		}
+		env.names[f.text(n.ChildByFieldName("name"))] = b
+		env = &scope{parent: env, names: make(map[string]binding)}
 		if params := n.ChildByFieldName("parameters"); params != nil {
 			for param := range children(params) {
 				if name := parameterName(param); name != nil {
-					env.names[f.text(name)] = ""
+					env.names[f.text(name)] = binding{}
 				}
 			}
+		}
+		if h := f.lowHandlers[n.Id()]; h.param != "" {
+			env.names[h.param] = binding{dispatch: h.server}
 		}
 	}
 	if c.GotoFirstChild() {
 		for {
-			if reason := f.walk(ctx, c, depth+1, env); reason != "" {
+			if reason := f.walk(ctx, c, depth+1, env, state); reason != "" {
 				return reason
 			}
 			if !c.GotoNextSibling() {
@@ -182,23 +241,35 @@ func (f *sourceFile) walk(ctx context.Context, c *sitter.TreeCursor, depth int, 
 // Bind imported symbols to qualified names and invalidate a binding on
 // reassignment. An unrelated object with a .tool method is not an MCP server.
 type scope struct {
-	names  map[string]string
+	names  map[string]binding
 	parent *scope
 }
 
 const serverInstance = "<MCP instance>"
 
-func (s *scope) resolve(name string) string {
-	first, rest, dotted := strings.Cut(name, ".")
+type binding struct {
+	qualified string
+	fn        *functionDef
+	low       *lowServer
+	dispatch  *lowServer
+}
+
+func (s *scope) lookup(name string) binding {
 	for ; s != nil; s = s.parent {
-		if bound, ok := s.names[first]; ok {
-			if dotted && bound != "" {
-				return bound + "." + rest
-			}
-			return bound
+		if b, ok := s.names[name]; ok {
+			return b
 		}
 	}
-	return ""
+	return binding{}
+}
+
+func (s *scope) resolve(name string) string {
+	first, rest, dotted := strings.Cut(name, ".")
+	bound := s.lookup(first).qualified
+	if dotted && bound != "" {
+		return bound + "." + rest
+	}
+	return bound
 }
 
 func isConstructor(name string) bool {
@@ -232,9 +303,13 @@ func (f *sourceFile) bindImport(n *sitter.Node, env *scope) bool {
 			if !f.allowExpansion(len(prefix)) {
 				return false
 			}
-			name = prefix + "." + name
+			if strings.HasSuffix(prefix, ".") {
+				name = prefix + name
+			} else {
+				name = prefix + "." + name
+			}
 		}
-		env.names[alias] = name
+		env.names[alias] = binding{qualified: name}
 	}
 	return true
 }
@@ -278,60 +353,6 @@ func (f *sourceFile) keyword(args *sitter.Node, name string) *sitter.Node {
 	return nil
 }
 
-func (f *sourceFile) decorated(n *sitter.Node, env *scope) bool {
-	fn := n.ChildByFieldName("definition")
-	if fn.Kind() != "function_definition" {
-		return true
-	}
-	for dec := range children(n) {
-		if dec.Kind() != "decorator" {
-			continue
-		}
-		call := firstChild(dec)
-		if call.Kind() != "call" {
-			continue
-		}
-		attr := call.ChildByFieldName("function")
-		if attr.Kind() != "attribute" || f.text(attr.ChildByFieldName("attribute")) != "tool" ||
-			env.resolve(f.text(attr.ChildByFieldName("object"))) != serverInstance {
-			continue
-		}
-		if !f.allowExpansion(int(fn.EndByte() - fn.StartByte())) {
-			return false
-		}
-		args := call.ChildByFieldName("arguments")
-		name := f.text(fn.ChildByFieldName("name"))
-		if explicit := f.keyword(args, "name"); explicit != nil {
-			literal := f.literal(explicit)
-			if literal == nil {
-				continue // Computed-name registrations are handled in Slice 5.
-			}
-			name = *literal
-		}
-		f.ordinals[name]++
-		tool := model.ToolFact{Name: name, ToolID: model.ToolID(f.path, &name, f.ordinals[name])}
-		start, end := n.StartPosition(), fn.EndPosition()
-		tool.SourceLocation = &model.Location{Path: f.path, StartLine: int(start.Row) + 1,
-			StartColumn: int(start.Column) + 1, EndLine: int(end.Row) + 1, EndColumn: int(end.Column) + 1}
-		desc := f.keyword(args, "description")
-		if desc == nil {
-			desc = keywordSplat(args) // Unpacked keywords can supply a description.
-		}
-		if desc == nil {
-			desc = docstring(fn)
-		}
-		tool.DeclaredDescription, tool.DescriptionResolved = f.description(tool.ToolID, "description", desc)
-		for param := range children(fn.ChildByFieldName("parameters")) {
-			if name := parameterName(param); name != nil {
-				tool.Parameters = append(tool.Parameters, f.parameter(tool.ToolID, f.text(name), param, env))
-			}
-		}
-		tool.Annotations = f.readHints(tool.ToolID, args, env)
-		f.tools = append(f.tools, tool)
-	}
-	return true
-}
-
 func docstring(fn *sitter.Node) *sitter.Node {
 	statement := firstChild(fn.ChildByFieldName("body"))
 	if statement == nil || statement.Kind() != "expression_statement" {
@@ -373,7 +394,7 @@ func parameterName(n *sitter.Node) *sitter.Node {
 	return nil // Positional-only and keyword-only separators have no name.
 }
 
-func (f *sourceFile) parameter(id, name string, n *sitter.Node, env *scope) model.Parameter {
+func (f *sourceFile) parameter(name string, n *sitter.Node, env *scope) model.Parameter {
 	typ := n.ChildByFieldName("type")
 	param := model.Parameter{Name: name, DeclaredType: f.text(typ), DescriptionResolved: true}
 	generic := firstChild(typ)
@@ -419,7 +440,8 @@ func (f *sourceFile) parameter(id, name string, n *sitter.Node, env *scope) mode
 				continue
 			}
 		}
-		param.Description, param.DescriptionResolved = f.description(id, "param:"+name+".description", expr)
+		param.Description = f.literal(expr)
+		param.DescriptionResolved = param.Description != nil
 		break
 	}
 	return param
