@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Timatoot/telltale/internal/model"
 )
 
 func TestRunEmptyTempDirPassAndJSONArtifact(t *testing.T) {
@@ -40,9 +42,13 @@ func TestRunEmptyTempDirPassAndJSONArtifact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read written JSON artifact: %v", err)
 	}
-	var got skeletonReport
+	var got model.ScanReport
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("unmarshal written JSON artifact: %v", err)
+	}
+	if got.SchemaVersion != model.SchemaVersion || got.Tool.Name != "telltale" || got.Target.Mode != "static" ||
+		got.Inventory == nil || got.Findings == nil || !got.Summary.PolicyPassed || !got.Summary.CoverageComplete || got.Summary.AnalysisExitCode != exitPass {
+		t.Fatalf("unexpected canonical report: %s", raw)
 	}
 	if got.Target.RepoName != filepath.Base(repoDir) {
 		t.Fatalf("repo_name = %q, want %q", got.Target.RepoName, filepath.Base(repoDir))
@@ -223,4 +229,36 @@ func TestRunJSONUnwritableDirLeavesNoTempFiles(t *testing.T) {
 			t.Fatalf("expected no stdout on unreadable repo dir, got %q", stdout.String())
 		}
 	})
+}
+
+func TestRunIdenticalJSONAcrossCheckouts(t *testing.T) {
+	var first []byte
+	for range 2 {
+		parent := t.TempDir()
+		repo := filepath.Join(parent, "same-repo")
+		if err := os.Mkdir(repo, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dest := filepath.Join(parent, "report.json")
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"audit", repo, "--json", dest}, &stdout, &stderr); code != exitPass {
+			t.Fatalf("exit %d: %s", code, &stderr)
+		}
+		root, err := os.OpenRoot(parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := root.ReadFile("report.json")
+		closeErr := root.Close()
+		if err != nil || closeErr != nil {
+			t.Fatalf("read report: %v, close: %v", err, closeErr)
+		}
+		if bytes.Contains(raw, []byte(parent)) {
+			t.Fatal("report contains checkout parent")
+		}
+		if first != nil && !bytes.Equal(first, raw) {
+			t.Fatal("report differs across checkouts")
+		}
+		first = raw
+	}
 }

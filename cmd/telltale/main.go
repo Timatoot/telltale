@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -9,25 +8,14 @@ import (
 	"path/filepath"
 
 	"github.com/Timatoot/telltale/internal/config"
+	"github.com/Timatoot/telltale/internal/model"
+	"github.com/Timatoot/telltale/internal/report"
 )
 
 const (
 	exitPass       = 0
 	exitFatalError = 2
 )
-
-// skeletonReport is a temporary Slice 1 JSON placeholder.
-// Slice 2 replaces this with the Canonical JSON 1.0 schema in internal/model and internal/report.
-type skeletonReport struct {
-	SchemaVersion string         `json:"schema_version"`
-	Target        skeletonTarget `json:"target"`
-	FindingsCount int            `json:"findings_count"`
-}
-
-type skeletonTarget struct {
-	RepoName string `json:"repo_name"`
-	Mode     string `json:"mode"`
-}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -36,43 +24,41 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) int {
 	cfg, err := config.Parse(args)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "telltale: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
 	}
 
 	if err := rejectUnfinishedModes(cfg); err != nil {
-		_, _ = fmt.Fprintf(stderr, "telltale: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
 	}
 
 	repoName, err := validateRepoDir(cfg.RepoPath)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "telltale: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
 	}
 
 	if cfg.JSONPath != "" {
-		payload, err := json.MarshalIndent(skeletonReport{
-			SchemaVersion: "1.0",
-			Target: skeletonTarget{
-				RepoName: repoName,
-				Mode:     "static",
-			},
-			FindingsCount: 0,
-		}, "", "  ")
+		scan := model.ScanReport{
+			SchemaVersion: model.SchemaVersion,
+			Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none"},
+			Target:        model.Target{RepoName: repoName, Mode: "static"},
+			Summary:       model.Summary{CoverageComplete: true, PolicyPassed: true, AnalysisExitCode: exitPass},
+		}
+		payload, err := report.RenderJSON(&scan, "")
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "telltale: marshal json report: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "telltale: render json report: %v\n", err)
 			return exitFatalError
 		}
-		payload = append(payload, '\n')
 
 		if err := writeFileAtomic(cfg.JSONPath, payload); err != nil {
-			_, _ = fmt.Fprintf(stderr, "telltale: write json report: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "telltale: write json report: %s\n", report.Sanitize(err.Error(), "", 4096))
 			return exitFatalError
 		}
 	}
 
-	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=0 status=pass\n", repoName)
+	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=0 status=pass\n", report.Sanitize(repoName, "", 4096))
 	return exitPass
 }
 
@@ -124,7 +110,12 @@ func validateRepoDir(repoPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve repository directory: %w", err)
 	}
-	return filepath.Base(absPath), nil
+	name := filepath.Base(absPath)
+	if name == string(filepath.Separator) {
+		// A filesystem root has no directory name to expose in a report.
+		name = "."
+	}
+	return name, nil
 }
 
 func writeFileAtomic(destPath string, data []byte) error {
