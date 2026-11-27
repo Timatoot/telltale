@@ -1,0 +1,226 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestRunEmptyTempDirPassAndJSONArtifact(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	outDir := t.TempDir()
+	jsonPath := filepath.Join(outDir, "report.json")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"audit", repoDir, "--json", jsonPath}, &stdout, &stderr)
+	if code != exitPass {
+		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitPass, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("unexpected stderr output: %s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "findings=0") {
+		t.Fatalf("stdout = %q, expected empty scan summary", stdout.String())
+	}
+
+	outRoot, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("open output dir root: %v", err)
+	}
+	defer func() {
+		_ = outRoot.Close()
+	}()
+
+	raw, err := outRoot.ReadFile("report.json")
+	if err != nil {
+		t.Fatalf("read written JSON artifact: %v", err)
+	}
+	var got skeletonReport
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal written JSON artifact: %v", err)
+	}
+	if got.Target.RepoName != filepath.Base(repoDir) {
+		t.Fatalf("repo_name = %q, want %q", got.Target.RepoName, filepath.Base(repoDir))
+	}
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("read output dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "report.json" {
+		t.Fatalf("unexpected files in output dir: %v", entries)
+	}
+}
+
+func TestRunFatalErrorsExit2(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	filePath := filepath.Join(repoDir, "not_a_dir.py")
+	if err := os.WriteFile(filePath, []byte("print('hi')\n"), 0o600); err != nil {
+		t.Fatalf("write test file: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "missing subcommand",
+			args: nil,
+		},
+		{
+			name: "invalid flag",
+			args: []string{"audit", repoDir, "--unknown-flag"},
+		},
+		{
+			name: "invalid fail-on",
+			args: []string{"audit", repoDir, "--fail-on", "bogus"},
+		},
+		{
+			name: "missing repo path",
+			args: []string{"audit", filepath.Join(repoDir, "does-not-exist")},
+		},
+		{
+			name: "repo path is regular file",
+			args: []string{"audit", filePath},
+		},
+		{
+			name: "rejected run-cmd metacharacter",
+			args: []string{"audit", repoDir, "--run-cmd", "python3 server.py; id"},
+		},
+		{
+			name: "rejected run-cmd unterminated quote",
+			args: []string{"audit", repoDir, "--run-cmd", `python3 "server.py`},
+		},
+		{
+			name: "verify without image",
+			args: []string{"audit", repoDir, "--verify"},
+		},
+		{
+			name: "reserved verify mode cannot pass empty audit",
+			args: []string{"audit", repoDir, "--verify", "--image", "localhost/example:latest"},
+		},
+		{
+			name: "reserved sarif mode",
+			args: []string{"audit", repoDir, "--sarif", filepath.Join(t.TempDir(), "out.sarif")},
+		},
+		{
+			name: "reserved html mode",
+			args: []string{"audit", repoDir, "--html", filepath.Join(t.TempDir(), "out.html")},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			code := run(tc.args, &stdout, &stderr)
+			if code != exitFatalError {
+				t.Fatalf("run(%v) exit code = %d, want %d (stdout=%q stderr=%q)", tc.args, code, exitFatalError, stdout.String(), stderr.String())
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("run(%v) wrote unexpected stdout on fatal error: %q", tc.args, stdout.String())
+			}
+			if stderr.Len() == 0 {
+				t.Fatalf("run(%v) wrote empty stderr on fatal error", tc.args)
+			}
+		})
+	}
+}
+
+func TestRunJSONUnwritableDirLeavesNoTempFiles(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+
+	t.Run("unwritable destination directory", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory write permission bits")
+		}
+
+		readOnlyDir := filepath.Join(t.TempDir(), "ro")
+		if err := os.Mkdir(readOnlyDir, 0o500); err != nil {
+			t.Fatalf("mkdir ro: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(readOnlyDir, 0o700) //nolint:gosec // G302: restore owner-only directory permissions so t.TempDir cleanup can remove it
+		})
+
+		jsonPath := filepath.Join(readOnlyDir, "report.json")
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"audit", repoDir, "--json", jsonPath}, &stdout, &stderr)
+		if code != exitFatalError {
+			t.Fatalf("exit code = %d, want %d (stderr=%q)", code, exitFatalError, stderr.String())
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("expected no stdout on write failure, got %q", stdout.String())
+		}
+
+		entries, err := os.ReadDir(readOnlyDir)
+		if err != nil {
+			t.Fatalf("read ro dir: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Fatalf("expected zero leftover files in unwritable dir, found %v", entries)
+		}
+	})
+
+	t.Run("rename failure cleans up staged temp file", func(t *testing.T) {
+		t.Parallel()
+		parentDir := t.TempDir()
+		// Make destination path an existing directory so CreateTemp succeeds in parentDir
+		// and os.Rename fails with EISDIR.
+		destDir := filepath.Join(parentDir, "existing-dir")
+		if err := os.Mkdir(destDir, 0o700); err != nil {
+			t.Fatalf("mkdir destDir: %v", err)
+		}
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"audit", repoDir, "--json", destDir}, &stdout, &stderr)
+		if code != exitFatalError {
+			t.Fatalf("exit code = %d, want %d (stderr=%q)", code, exitFatalError, stderr.String())
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("expected no stdout on rename failure, got %q", stdout.String())
+		}
+
+		entries, err := os.ReadDir(parentDir)
+		if err != nil {
+			t.Fatalf("read parentDir: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "existing-dir" {
+			t.Fatalf("expected zero leftover temp files after rename failure, found %v", entries)
+		}
+	})
+
+	t.Run("unreadable repository directory exits 2", func(t *testing.T) {
+		t.Parallel()
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory read permission bits")
+		}
+
+		unreadableDir := filepath.Join(t.TempDir(), "no-read")
+		if err := os.Mkdir(unreadableDir, 0o000); err != nil {
+			t.Fatalf("mkdir no-read: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = os.Chmod(unreadableDir, 0o700) //nolint:gosec // G302: restore owner-only directory permissions so t.TempDir cleanup can remove it
+		})
+
+		var stdout, stderr bytes.Buffer
+		code := run([]string{"audit", unreadableDir}, &stdout, &stderr)
+		if code != exitFatalError {
+			t.Fatalf("exit code = %d, want %d (stdout=%q stderr=%q)", code, exitFatalError, stdout.String(), stderr.String())
+		}
+		if stdout.Len() != 0 {
+			t.Fatalf("expected no stdout on unreadable repo dir, got %q", stdout.String())
+		}
+	})
+}

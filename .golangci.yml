@@ -10,8 +10,8 @@ linters:
     - nilerr
   exclusions:
     rules:
-      # Allow controlled exec.CommandContext calls inside the SAST and sandbox wrappers
-      - path: internal/(sast|sandbox)/
+      # Allow controlled exec.CommandContext calls inside the opengrep and sandbox wrappers
+      - path: internal/(opengrep|sandbox)/
         linters:
           - gosec
         text: "G204"
