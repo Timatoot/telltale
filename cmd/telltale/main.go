@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/Timatoot/telltale/internal/config"
+	"github.com/Timatoot/telltale/internal/extract/python"
 	"github.com/Timatoot/telltale/internal/ingest"
 	"github.com/Timatoot/telltale/internal/model"
 	"github.com/Timatoot/telltale/internal/report"
@@ -41,7 +42,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitFatalError
 	}
 
-	coverage, err := ingestCoverage(context.Background(), cfg.RepoPath)
+	inventory, coverage, err := scanPython(context.Background(), cfg.RepoPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
@@ -53,7 +54,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none"},
 			Target:        model.Target{RepoName: repoName, Mode: "static"},
 			Coverage:      coverage,
-			Summary:       model.Summary{CoverageComplete: len(coverage.FilesSkipped) == 0, PolicyPassed: true, AnalysisExitCode: exitPass},
+			Inventory:     inventory,
+			Summary:       model.Summary{CoverageComplete: len(coverage.FilesSkipped) == 0 && len(coverage.ParseErrors) == 0, PolicyPassed: true, AnalysisExitCode: exitPass},
 		}
 		payload, err := report.RenderJSON(&scan, "")
 		if err != nil {
@@ -84,13 +86,21 @@ func rejectUnfinishedModes(cfg config.Config) error {
 	return nil
 }
 
-func ingestCoverage(ctx context.Context, repoPath string) (_ model.Coverage, err error) {
+func scanPython(ctx context.Context, repoPath string) (_ []model.ToolFact, _ model.Coverage, err error) {
 	snap, err := ingest.CreateSnapshot(ctx, repoPath, "")
 	if err != nil {
-		return model.Coverage{}, err
+		return nil, model.Coverage{}, err
 	}
 	defer func() { err = errors.Join(err, snap.Close()) }()
-	return model.Coverage{FilesScanned: len(snap.Files), FilesSkipped: snap.FilesSkipped}, nil
+	result, err := python.Extract(ctx, snap)
+	if err != nil {
+		return nil, model.Coverage{}, err
+	}
+	return result.Tools, model.Coverage{
+		FilesScanned: len(snap.Files), FilesSkipped: snap.FilesSkipped,
+		ToolsDiscovered: len(result.Tools), ParseErrors: result.ParseErrors,
+		UnresolvedDescriptions: result.UnresolvedDescriptions,
+	}, nil
 }
 
 func repositoryName(repoPath string) (string, error) {
