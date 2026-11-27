@@ -334,3 +334,92 @@ func TestRenamedParentUsesPinnedDirectory(t *testing.T) {
 		t.Fatalf("snapshot read %q, %v", got, err)
 	}
 }
+
+func TestSymlinkedTempParentAndRepoRelPath(t *testing.T) {
+	repo := tempRoot(t)
+	write(t, repo, "pkg/source.py", []byte("print(1)\n"))
+
+	base := t.TempDir()
+	realParent := filepath.Join(base, "real")
+	if err := os.Mkdir(realParent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linkParent := filepath.Join(base, "link")
+	if err := os.Symlink(realParent, linkParent); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := CreateSnapshot(t.Context(), repo.Name(), linkParent)
+	if err != nil {
+		t.Fatalf("CreateSnapshot: %v", err)
+	}
+	if s.Dir() != s.Root().Name() {
+		t.Fatalf("Dir() = %q, Root().Name() = %q", s.Dir(), s.Root().Name())
+	}
+	if !strings.HasPrefix(s.Dir(), realParent+"/") {
+		t.Fatalf("Dir() %q did not resolve symlinked tempParent %q", s.Dir(), realParent)
+	}
+
+	for _, valid := range []string{
+		"pkg/source.py",
+		"./pkg/source.py",
+		s.Dir() + "/pkg/source.py",
+		s.Dir() + "//pkg/source.py",
+	} {
+		if rel, ok := s.RepoRelPath(valid); !ok || rel != "pkg/source.py" {
+			t.Fatalf("RepoRelPath(%q) = (%q, %v), want (%q, true)", valid, rel, ok, "pkg/source.py")
+		}
+	}
+	for _, invalid := range []string{"", ".", s.Dir(), "/other/pkg/source.py", "../pkg/source.py"} {
+		if rel, ok := s.RepoRelPath(invalid); ok {
+			t.Fatalf("RepoRelPath(%q) = (%q, true), want false", invalid, rel)
+		}
+	}
+
+	if err := s.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	var nilSnap *Snapshot
+	if err := nilSnap.Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
+	}
+}
+
+func TestDepth256BoundedFDs(t *testing.T) {
+	repo := tempRoot(t)
+	parts := strings.Repeat("d/", maxDepth)
+	write(t, repo, parts+"leaf.py", []byte("x = 1\n"))
+
+	beforeFDs, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		t.Fatalf("read /proc/self/fd: %v", err)
+	}
+	// Restrict open FDs below 3*maxDepth so any regression holding 3 FDs/level fails with EMFILE.
+	var orig syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &orig); err != nil {
+		t.Fatalf("getrlimit: %v", err)
+	}
+	capLimit := uint64(len(beforeFDs) + maxDepth + 64)
+	if orig.Cur > capLimit {
+		limited := orig
+		limited.Cur = capLimit
+		if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limited); err != nil {
+			t.Fatalf("setrlimit(%d): %v", capLimit, err)
+		}
+		t.Cleanup(func() {
+			_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &orig)
+		})
+	}
+
+	s, err := CreateSnapshot(t.Context(), repo.Name(), t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSnapshot at depth %d under FD cap %d failed: %v", maxDepth, capLimit, err)
+	}
+	defer func() { _ = s.Close() }()
+	if !slices.Equal(s.Files, []string{parts + "leaf.py"}) {
+		t.Fatalf("unexpected files: %v", s.Files)
+	}
+}

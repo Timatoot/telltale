@@ -174,3 +174,74 @@ func TestJSONRejectsInvalidPathsAndFatalExit(t *testing.T) {
 		t.Fatal("rendered fatal exit code")
 	}
 }
+
+func TestJSONPreservesStructuredIdentifiersAndMultilineProse(t *testing.T) {
+	const (
+		canary    = "synthetic-canary"
+		digestRef = "localhost/mcp@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+		hexPath   = "pkg/65fbc132d649a07e7b492a3c20df81e5/server.py"
+		toolID    = "py:pkg/65fbc132d649a07e7b492a3c20df81e5/server.py:reader"
+		multiline = "line1\n\tindented\r\n\x1b[31m\u202E Bearer tok123 " + canary
+	)
+	r := emptyReport()
+	r.Target.Mode = "verify"
+	r.Target.Image = &model.Image{Ref: digestRef, ImageID: "sha256:abc"}
+	r.Inventory = []model.ToolFact{{
+		ToolID:              toolID,
+		Name:                "reader",
+		SourceLocation:      &model.Location{Path: hexPath, StartLine: 1, StartColumn: 1, EndLine: 2, EndColumn: 1},
+		DeclaredDescription: new(multiline),
+		LiveDescription:     new(multiline),
+		Parameters:          []model.Parameter{{Name: "path", DeclaredType: "str", Description: new(multiline)}},
+	}}
+	r.Findings = []model.Finding{{
+		ID:          "POISON-PROMPT-OVERRIDE",
+		Fingerprint: "fp1",
+		Origin:      model.OriginStatic,
+		Family:      model.FamilyPoisoning,
+		Summary:     multiline,
+		Remediation: multiline,
+		ToolID:      toolID,
+		Location:    &model.Location{Path: hexPath, StartLine: 1, StartColumn: 1, EndLine: 2, EndColumn: 1},
+		Evidence: []model.EvidenceItem{{
+			Kind:            model.EvidenceDeclared,
+			Source:          model.SourceTreeSitter,
+			Detail:          "single\nline",
+			RedactedExcerpt: multiline,
+		}},
+	}}
+
+	raw, err := RenderJSON(&r, canary)
+	if err != nil {
+		t.Fatalf("RenderJSON error: %v", err)
+	}
+	var got model.ScanReport
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Target.Image == nil || got.Target.Image.Ref != digestRef {
+		t.Fatalf("Target.Image.Ref = %+v, want %q", got.Target.Image, digestRef)
+	}
+	if got.Inventory[0].ToolID != toolID || got.Inventory[0].SourceLocation.Path != hexPath {
+		t.Fatalf("identifier corrupted: %+v", got.Inventory[0])
+	}
+	if got.Findings[0].ToolID != toolID || got.Findings[0].Location.Path != hexPath {
+		t.Fatalf("finding identifier corrupted: %+v", got.Findings[0])
+	}
+	const wantMultiline = "line1\n\tindented<U+000D>\n<U+001B>[31m<U+202E> Bearer [REDACTED] [REDACTED]"
+	for _, s := range []string{
+		*got.Inventory[0].DeclaredDescription,
+		*got.Inventory[0].LiveDescription,
+		*got.Inventory[0].Parameters[0].Description,
+		got.Findings[0].Summary,
+		got.Findings[0].Remediation,
+		got.Findings[0].Evidence[0].RedactedExcerpt,
+	} {
+		if s != wantMultiline {
+			t.Errorf("multiline field = %q, want %q", s, wantMultiline)
+		}
+	}
+	if got.Findings[0].Evidence[0].Detail != "single<U+000A>line" {
+		t.Errorf("single-line detail = %q", got.Findings[0].Evidence[0].Detail)
+	}
+}

@@ -20,6 +20,48 @@ const (
 	Info     Severity = "info"
 )
 
+type Origin string
+
+const (
+	OriginStatic  Origin = "static"
+	OriginRuntime Origin = "runtime"
+)
+
+type Family string
+
+const (
+	FamilyPoisoning        Family = "poisoning"
+	FamilyContractMismatch Family = "contract_mismatch"
+	FamilyFilesystemEscape Family = "filesystem_escape"
+)
+
+type Confidence string
+
+const (
+	ConfidenceHigh   Confidence = "high"
+	ConfidenceMedium Confidence = "medium"
+	ConfidenceLow    Confidence = "low"
+)
+
+type EvidenceKind string
+
+const (
+	EvidenceDeclared EvidenceKind = "declared"
+	EvidenceInferred EvidenceKind = "inferred"
+	EvidenceObserved EvidenceKind = "observed"
+	EvidenceUnknown  EvidenceKind = "unknown"
+)
+
+type EvidenceSource string
+
+const (
+	SourceTreeSitter EvidenceSource = "tree-sitter"
+	SourceOpengrep   EvidenceSource = "opengrep"
+	SourceMCPStdio   EvidenceSource = "mcp-stdio"
+	SourceSandboxFS  EvidenceSource = "sandbox-fs"
+	SourceCLI        EvidenceSource = "cli"
+)
+
 type StaticStatus string
 
 const (
@@ -178,13 +220,13 @@ type Sink struct {
 type Finding struct {
 	ID            string         `json:"id"`
 	Fingerprint   string         `json:"fingerprint"`
-	Origin        string         `json:"origin"`
-	Family        string         `json:"family"`
+	Origin        Origin         `json:"origin"`
+	Family        Family         `json:"family"`
 	Title         string         `json:"title"`
 	Summary       string         `json:"summary"`
 	Remediation   string         `json:"remediation"`
 	Severity      Severity       `json:"severity"`
-	Confidence    string         `json:"confidence"`
+	Confidence    Confidence     `json:"confidence"`
 	StaticStatus  StaticStatus   `json:"static_status"`
 	DynamicStatus DynamicStatus  `json:"dynamic_status"`
 	DynamicReason *DynamicReason `json:"dynamic_reason"`
@@ -195,10 +237,10 @@ type Finding struct {
 	Mappings      Mappings       `json:"mappings"`
 }
 type EvidenceItem struct {
-	Kind            string `json:"kind"`
-	Source          string `json:"source"`
-	Detail          string `json:"detail"`
-	RedactedExcerpt string `json:"redacted_excerpt"`
+	Kind            EvidenceKind   `json:"kind"`
+	Source          EvidenceSource `json:"source"`
+	Detail          string         `json:"detail"`
+	RedactedExcerpt string         `json:"redacted_excerpt"`
 }
 type Mappings struct {
 	CWE []string `json:"cwe"`

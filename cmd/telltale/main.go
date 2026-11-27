@@ -57,7 +57,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		payload, err := report.RenderJSON(&scan, "")
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "telltale: render json report: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "telltale: render json report: %s\n", report.Sanitize(err.Error(), "", 4096))
 			return exitFatalError
 		}
 
@@ -67,7 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=0 status=pass\n", report.Sanitize(repoName, "", 4096))
+	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=0 status=pass\n", report.SanitizeIdentifier(repoName, "", 4096))
 	return exitPass
 }
 

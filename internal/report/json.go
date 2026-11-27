@@ -23,19 +23,19 @@ func RenderJSON(input *model.ScanReport, canary string) ([]byte, error) {
 	}
 	p := presentation{canary: canary}
 	r := *input
-	r.Tool.Name = p.text(r.Tool.Name)
-	r.Tool.Version = p.text(r.Tool.Version)
-	r.Tool.OpengrepVersion = p.text(r.Tool.OpengrepVersion)
-	r.Tool.RuntimeBackend = p.text(r.Tool.RuntimeBackend)
-	r.Tool.RuntimeVersion = p.optionalText(r.Tool.RuntimeVersion)
+	r.Tool.Name = p.ident(r.Tool.Name)
+	r.Tool.Version = p.ident(r.Tool.Version)
+	r.Tool.OpengrepVersion = p.ident(r.Tool.OpengrepVersion)
+	r.Tool.RuntimeBackend = p.ident(r.Tool.RuntimeBackend)
+	r.Tool.RuntimeVersion = p.optionalIdent(r.Tool.RuntimeVersion)
 	r.Target.RepoName = strings.ToValidUTF8(r.Target.RepoName, "�")
 	if !fs.ValidPath(r.Target.RepoName) || strings.Contains(r.Target.RepoName, "/") || windowsAbsolute(r.Target.RepoName) {
 		return nil, errors.New("expected a repository basename")
 	}
-	r.Target.RepoName = p.text(r.Target.RepoName)
+	r.Target.RepoName = p.ident(r.Target.RepoName)
 	if r.Target.Image != nil {
 		img := *r.Target.Image
-		img.Ref = p.text(img.Ref)
+		img.Ref = p.ident(img.Ref)
 		// The image digest and finding fingerprints are generated identifiers.
 		r.Target.Image = &img
 	}
@@ -89,11 +89,24 @@ type presentation struct {
 }
 
 func (p *presentation) text(s string) string { return Sanitize(s, p.canary, maxFieldBytes) }
-func (p *presentation) optionalText(s *string) *string {
+func (p *presentation) ident(s string) string {
+	return SanitizeIdentifier(s, p.canary, maxFieldBytes)
+}
+func (p *presentation) optionalIdent(s *string) *string {
 	if s == nil {
 		return nil
 	}
-	clean := p.text(*s)
+	clean := p.ident(*s)
+	return &clean
+}
+func (p *presentation) multiline(s string) string {
+	return SanitizeMultiline(s, p.canary, maxFieldBytes)
+}
+func (p *presentation) optionalMultiline(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	clean := p.multiline(*s)
 	return &clean
 }
 
@@ -116,7 +129,7 @@ func (p *presentation) path(s string) string {
 	}
 	parts := strings.Split(s, "/")
 	for i := range parts {
-		parts[i] = p.text(parts[i])
+		parts[i] = p.ident(parts[i])
 	}
 	return strings.Join(parts, "/")
 }
@@ -130,7 +143,7 @@ func (p *presentation) id(id string) string {
 			return ""
 		}
 	}
-	return p.text(id)
+	return p.ident(id)
 }
 
 func (p *presentation) location(loc *model.Location) *model.Location {
@@ -148,7 +161,7 @@ func (p *presentation) coverage(c model.Coverage, mode string) model.Coverage {
 	})
 	c.ParseErrors = project(c.ParseErrors, func(v model.ParseError) model.ParseError {
 		v.Path = p.path(v.Path)
-		v.Engine = p.text(v.Engine)
+		v.Engine = p.ident(v.Engine)
 		v.Reason = p.text(v.Reason)
 		return v
 	})
@@ -159,12 +172,12 @@ func (p *presentation) coverage(c model.Coverage, mode string) model.Coverage {
 	})
 	c.UnresolvedDescriptions = project(c.UnresolvedDescriptions, func(v model.UnresolvedDescription) model.UnresolvedDescription {
 		v.ToolID = p.id(v.ToolID)
-		v.Field = p.text(v.Field)
+		v.Field = p.ident(v.Field)
 		return v
 	})
 	c.AnalysisLimits.CrossFileHelperCalls = project(c.AnalysisLimits.CrossFileHelperCalls, func(v model.HelperCall) model.HelperCall {
 		v.ToolID = p.id(v.ToolID)
-		v.CalleeModule = p.text(v.CalleeModule)
+		v.CalleeModule = p.ident(v.CalleeModule)
 		return v
 	})
 	if mode == "verify" {
@@ -172,9 +185,9 @@ func (p *presentation) coverage(c model.Coverage, mode string) model.Coverage {
 		if c.RuntimeCoverage != nil {
 			runtime = *c.RuntimeCoverage
 		}
-		runtime.StaticOnlyTools = project(runtime.StaticOnlyTools, p.text)
-		runtime.RuntimeOnlyTools = project(runtime.RuntimeOnlyTools, p.text)
-		runtime.AmbiguousJoins = project(runtime.AmbiguousJoins, p.text)
+		runtime.StaticOnlyTools = project(runtime.StaticOnlyTools, p.ident)
+		runtime.RuntimeOnlyTools = project(runtime.RuntimeOnlyTools, p.ident)
+		runtime.AmbiguousJoins = project(runtime.AmbiguousJoins, p.ident)
 		c.RuntimeCoverage = &runtime
 	} else {
 		c.RuntimeCoverage = nil
@@ -184,21 +197,21 @@ func (p *presentation) coverage(c model.Coverage, mode string) model.Coverage {
 
 func (p *presentation) tool(t model.ToolFact) model.ToolFact {
 	t.ToolID = p.id(t.ToolID)
-	t.Name = p.text(t.Name)
+	t.Name = p.ident(t.Name)
 	t.SourceLocation = p.location(t.SourceLocation)
-	t.DeclaredDescription = p.optionalText(t.DeclaredDescription)
-	t.LiveDescription = p.optionalText(t.LiveDescription)
+	t.DeclaredDescription = p.optionalMultiline(t.DeclaredDescription)
+	t.LiveDescription = p.optionalMultiline(t.LiveDescription)
 	t.Parameters = project(t.Parameters, func(v model.Parameter) model.Parameter {
-		v.Name = p.text(v.Name)
-		v.DeclaredType = p.text(v.DeclaredType)
-		v.Description = p.optionalText(v.Description)
+		v.Name = p.ident(v.Name)
+		v.DeclaredType = p.ident(v.DeclaredType)
+		v.Description = p.optionalMultiline(v.Description)
 		return v
 	})
 	t.InferredSinks = project(t.InferredSinks, func(v model.Sink) model.Sink {
 		v.Span.Path = p.path(v.Span.Path)
-		v.Category = p.text(v.Category)
-		v.RuleID = p.text(v.RuleID)
-		v.NormalizedCallee = p.text(v.NormalizedCallee)
+		v.Category = p.ident(v.Category)
+		v.RuleID = p.ident(v.RuleID)
+		v.NormalizedCallee = p.ident(v.NormalizedCallee)
 		return v
 	})
 	return t
@@ -208,13 +221,13 @@ func (p *presentation) finding(f model.Finding) model.Finding {
 	f.ToolID = p.id(f.ToolID)
 	f.Location = p.location(f.Location)
 	f.Title = p.text(f.Title)
-	f.Summary = p.text(f.Summary)
-	f.Remediation = p.text(f.Remediation)
+	f.Summary = p.multiline(f.Summary)
+	f.Remediation = p.multiline(f.Remediation)
 	f.Evidence = project(f.Evidence, func(e model.EvidenceItem) model.EvidenceItem {
 		e.Detail = p.text(e.Detail)
-		e.RedactedExcerpt = Sanitize(e.RedactedExcerpt, p.canary, excerptBytes)
+		e.RedactedExcerpt = SanitizeMultiline(e.RedactedExcerpt, p.canary, excerptBytes)
 		return e
 	})
-	f.Mappings.CWE = project(f.Mappings.CWE, p.text)
+	f.Mappings.CWE = project(f.Mappings.CWE, p.ident)
 	return f
 }

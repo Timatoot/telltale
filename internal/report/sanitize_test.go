@@ -52,3 +52,31 @@ func TestNormalizeDocstring(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitizeMultiline(t *testing.T) {
+	in := "line1\n\tindented\r\n\x1b[31m\x00\u0085\u202E\u200B Bearer tok123 Az9By8Cx7Dw6Ev5Fu4Gt3Hs2Ir1Jq0 canary-value"
+	want := "line1\n\tindented<U+000D>\n<U+001B>[31m<U+0000><U+0085><U+202E><U+200B> Bearer [REDACTED] [REDACTED] [REDACTED]"
+	if got := SanitizeMultiline(in, "canary-value", 512); got != want {
+		t.Errorf("SanitizeMultiline() = %q, want %q", got, want)
+	}
+	if got := SanitizeMultiline("a\n\t🙂b", "", 5); got != "a\n\t" || !utf8.ValidString(got) {
+		t.Errorf("SanitizeMultiline byte limit = %q", got)
+	}
+	if got := SanitizeMultiline(strings.Repeat("x\n", maxFieldBytes), "", 32); got != "[truncated]" {
+		t.Errorf("SanitizeMultiline maxFieldBytes = %q", got)
+	}
+}
+
+func TestSanitizeIdentifier(t *testing.T) {
+	const digestRef = "localhost/mcp@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	for _, tc := range []struct{ input, want string }{
+		{digestRef, digestRef},
+		{"pkg/65fbc132d649a07e7b492a3c20df81e5/server.py", "pkg/65fbc132d649a07e7b492a3c20df81e5/server.py"},
+		{"password=demo.py", "password=demo.py"},
+		{"id\n\t\r\x1b\u202E\u200B-canary-value", "id<U+000A><U+0009><U+000D><U+001B><U+202E><U+200B>-[REDACTED]"},
+	} {
+		if got := SanitizeIdentifier(tc.input, "canary-value", 512); got != tc.want {
+			t.Errorf("SanitizeIdentifier(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}

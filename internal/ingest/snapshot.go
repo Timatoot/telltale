@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -34,22 +35,41 @@ type Snapshot struct {
 	root         *os.Root
 	Files        []string // sorted repo-relative POSIX paths
 	FilesSkipped []model.SkippedFile
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 func (s *Snapshot) Root() *os.Root { return s.root }
+func (s *Snapshot) Dir() string    { return s.root.Name() }
 
 // RepoRelPath maps a known absolute snapshot filename or a relative manifest
 // entry back to the repository. Unknown engine paths have no mapping.
 func (s *Snapshot) RepoRelPath(snapshotPath string) (string, bool) {
-	rel := strings.TrimPrefix(snapshotPath, s.root.Name()+"/")
-	if _, ok := slices.BinarySearch(s.Files, rel); ok {
-		return rel, true
+	if snapshotPath == "" {
+		return "", false
+	}
+	cleaned := filepath.Clean(snapshotPath)
+	if filepath.IsAbs(cleaned) {
+		var ok bool
+		cleaned, ok = strings.CutPrefix(cleaned, s.root.Name()+"/")
+		if !ok {
+			return "", false
+		}
+	}
+	if _, ok := slices.BinarySearch(s.Files, cleaned); ok {
+		return cleaned, true
 	}
 	return "", false
 }
 
 func (s *Snapshot) Close() error {
-	return errors.Join(s.root.Close(), os.RemoveAll(s.root.Name()))
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		s.closeErr = errors.Join(s.root.Close(), os.RemoveAll(s.root.Name()))
+	})
+	return s.closeErr
 }
 
 // CreateSnapshot uses the system temp directory if tempParent is empty.
@@ -70,8 +90,8 @@ func CreateSnapshot(ctx context.Context, repoPath, tempParent string) (_ *Snapsh
 	if err != nil {
 		return nil, fmt.Errorf("open repository directory: %w", err)
 	}
-	defer func() { _ = dir.Close() }()
 	repo, err := os.OpenRoot(fdPath(dir))
+	_ = dir.Close()
 	if err != nil {
 		return nil, fmt.Errorf("pin repository root: %w", err)
 	}
@@ -83,6 +103,10 @@ func CreateSnapshot(ctx context.Context, repoPath, tempParent string) (_ *Snapsh
 	parent, err := filepath.Abs(tempParent)
 	if err != nil {
 		return nil, fmt.Errorf("resolve temporary parent: %w", err)
+	}
+	parent, err = filepath.EvalSymlinks(parent)
+	if err != nil {
+		return nil, fmt.Errorf("resolve temporary parent symlinks: %w", err)
 	}
 	path, err := os.MkdirTemp(parent, "telltale-snapshot-*")
 	if err != nil {
@@ -141,7 +165,11 @@ func (w *walker) walk(ctx context.Context, root *os.Root, prefix string, depth i
 	if err != nil {
 		return fmt.Errorf("open directory %q: %w", prefix, err)
 	}
-	defer func() { _ = dir.Close() }()
+	defer func() {
+		if dir != nil {
+			_ = dir.Close()
+		}
+	}()
 
 	var names []string
 	for {
@@ -173,10 +201,28 @@ func (w *walker) walk(ctx context.Context, root *os.Root, prefix string, depth i
 		if err != nil {
 			return fmt.Errorf("classify %q: %w", filepath.Join(prefix, name), err)
 		}
+		if dir == nil {
+			dir, err = root.Open(".")
+			if err != nil {
+				return fmt.Errorf("reopen directory %q: %w", prefix, err)
+			}
+		}
 		rel := filepath.Join(prefix, name)
-		reason, err := w.visit(ctx, dir, name, rel, depth, info)
+		child, reason, err := w.openOrCopy(dir, name, rel, info)
 		if err != nil {
 			return err
+		}
+		if child != nil {
+			// Close the directory stream before descending so each depth level
+			// holds only the pinned *os.Root descriptor across recursion.
+			_ = dir.Close()
+			dir = nil
+			err = w.walk(ctx, child, rel, depth+1)
+			_ = child.Close()
+			if err != nil {
+				return err
+			}
+			continue
 		}
 		if reason != "" {
 			w.snap.FilesSkipped = append(w.snap.FilesSkipped, model.SkippedFile{Path: rel, Reason: reason})
@@ -197,23 +243,32 @@ func typeReason(mode fs.FileMode) model.SkipReason {
 }
 
 func (w *walker) visit(ctx context.Context, dir *os.File, name, rel string, depth int, info fs.FileInfo) (model.SkipReason, error) {
+	child, reason, err := w.openOrCopy(dir, name, rel, info)
+	if err != nil || child == nil {
+		return reason, err
+	}
+	defer func() { _ = child.Close() }()
+	return "", w.walk(ctx, child, rel, depth+1)
+}
+
+func (w *walker) openOrCopy(dir *os.File, name, rel string, info fs.FileInfo) (*os.Root, model.SkipReason, error) {
 	if reason := typeReason(info.Mode()); reason != "" {
-		return reason, nil
+		return nil, reason, nil
 	}
 	if info.IsDir() {
 		if os.SameFile(info, w.ownDir) {
-			return "", nil // TMPDIR or the caller's temp parent can be under the repository.
+			return nil, "", nil // TMPDIR or the caller's temp parent can be under the repository.
 		}
 	} else {
 		if !strings.HasSuffix(name, ".py") {
-			return "", nil
+			return nil, "", nil
 		}
 		w.candidates++
 		if w.candidates > maxFiles {
-			return model.CountCap, nil
+			return nil, model.CountCap, nil
 		}
 		if reason := w.sizeReason(info.Size()); reason != "" {
-			return reason, nil
+			return nil, reason, nil
 		}
 	}
 
@@ -222,36 +277,36 @@ func (w *walker) visit(ctx context.Context, dir *os.File, name, rel string, dept
 	// its driver or following the link.
 	pin, err := os.OpenFile(filepath.Join(fdPath(dir), name), oPath|syscall.O_NOFOLLOW, 0) //nolint:gosec // G304: descriptor-relative single component, metadata only.
 	if err != nil {
-		return "", fmt.Errorf("pin entry %q: %w", rel, err)
+		return nil, "", fmt.Errorf("pin entry %q: %w", rel, err)
 	}
 	defer func() { _ = pin.Close() }()
 	actual, err := pin.Stat()
 	if err != nil {
-		return "", fmt.Errorf("stat pinned entry %q: %w", rel, err)
+		return nil, "", fmt.Errorf("stat pinned entry %q: %w", rel, err)
 	}
 	if reason := typeReason(actual.Mode()); reason != "" {
-		return reason, nil
+		return nil, reason, nil
 	}
 	if !os.SameFile(info, actual) || info.Mode().Type() != actual.Mode().Type() {
-		return "", fmt.Errorf("directory entry changed during ingestion at %q", rel)
+		return nil, "", fmt.Errorf("directory entry changed during ingestion at %q", rel)
 	}
 	if actual.IsDir() {
 		child, err := os.OpenRoot(fdPath(pin))
 		if err != nil {
-			return "", fmt.Errorf("open pinned directory %q: %w", rel, err)
+			return nil, "", fmt.Errorf("open pinned directory %q: %w", rel, err)
 		}
-		defer func() { _ = child.Close() }()
-		return "", w.walk(ctx, child, rel, depth+1)
+		return child, "", nil
 	}
 	if reason := w.sizeReason(actual.Size()); reason != "" {
-		return reason, nil
+		return nil, reason, nil
 	}
 	file, err := os.OpenFile(fdPath(pin), os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // G304: kernel link to the verified regular inode.
 	if err != nil {
-		return "", fmt.Errorf("open pinned source %q: %w", rel, err)
+		return nil, "", fmt.Errorf("open pinned source %q: %w", rel, err)
 	}
 	defer func() { _ = file.Close() }()
-	return w.copyFile(file, rel)
+	reason, err := w.copyFile(file, rel)
+	return nil, reason, err
 }
 
 func (w *walker) sizeReason(size int64) model.SkipReason {

@@ -45,9 +45,27 @@ func redactToken(s string) string {
 	return s
 }
 
-// Sanitize returns at most maxBytes of valid UTF-8. Redact before clipping so
-// a cutoff inside a credential cannot disclose its prefix.
+// Sanitize returns at most maxBytes of valid single-line UTF-8 with control,
+// bidi, and zero-width characters escaped, and secrets/canary redacted.
 func Sanitize(text, canary string, maxBytes int) string {
+	return sanitize(text, canary, maxBytes, true, false)
+}
+
+// SanitizeMultiline behaves like Sanitize while preserving '\n' and '\t' for
+// multi-line prose and source excerpts.
+func SanitizeMultiline(text, canary string, maxBytes int) string {
+	return sanitize(text, canary, maxBytes, true, true)
+}
+
+// SanitizeIdentifier escapes control, bidi, and zero-width characters and scrubs
+// any canary token without applying heuristic credential/entropy redaction.
+func SanitizeIdentifier(text, canary string, maxBytes int) string {
+	return sanitize(text, canary, maxBytes, false, false)
+}
+
+// sanitize returns at most maxBytes of valid UTF-8. Redact before clipping so
+// a cutoff inside a credential cannot disclose its prefix.
+func sanitize(text, canary string, maxBytes int, redactSecrets, allowMultiline bool) string {
 	if maxBytes <= 0 {
 		return ""
 	}
@@ -57,11 +75,14 @@ func Sanitize(text, canary string, maxBytes int) string {
 	if canary != "" {
 		text = strings.ReplaceAll(text, canary, redacted)
 	}
-	text = credential.ReplaceAllString(text, "${1}"+redacted)
-	text = token.ReplaceAllStringFunc(text, redactToken)
+	if redactSecrets {
+		text = credential.ReplaceAllString(text, "${1}"+redacted)
+		text = token.ReplaceAllStringFunc(text, redactToken)
+	}
 	var out strings.Builder
 	for _, r := range text {
-		if unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector) {
+		isCtrl := unicode.IsControl(r) && (!allowMultiline || (r != '\n' && r != '\t'))
+		if isCtrl || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector) {
 			esc := fmt.Sprintf("<U+%04X>", r)
 			if len(esc) > maxBytes-out.Len() {
 				break
