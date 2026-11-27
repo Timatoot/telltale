@@ -1,0 +1,118 @@
+rules:
+  - id: fs-write
+    languages: [python]
+    severity: INFO
+    message: Operation may create or modify a filesystem entry.
+    metadata:
+      category: fs_write
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: pathlib.Path(...).$METHOD(...)
+              - pattern: (pathlib.Path(...) / $NAME).$METHOD(...)
+              - patterns:
+                  - pattern: $OBJ.$METHOD(...)
+                  - pattern-either:
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...)
+                          ...
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...) / $NAME
+                          ...
+                      - pattern-inside: |
+                          def $F(..., $OBJ: pathlib.Path, ...):
+                              ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(chmod|mkdir|touch)$
+      - pattern: os.chmod(...)
+      - pattern: os.makedirs(...)
+      - pattern: os.mkdir(...)
+      - pattern: shutil.copymode(...)
+      - pattern: shutil.copystat(...)
+      - patterns:
+          - pattern-either:
+              - pattern: open($PATH, $MODE, ...)
+              - pattern: open(..., mode=$MODE, ...)
+              - pattern: io.open($PATH, $MODE, ...)
+              - pattern: io.open(..., mode=$MODE, ...)
+              - pattern: pathlib.Path(...).open($MODE, ...)
+              - pattern: pathlib.Path(...).open(..., mode=$MODE, ...)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: ^["'][abtx+]*[ax][abtx+]*["']$
+  - id: fs-delete
+    languages: [python]
+    severity: INFO
+    message: Operation may remove a filesystem entry.
+    metadata:
+      category: fs_delete
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: pathlib.Path(...).$METHOD(...)
+              - pattern: (pathlib.Path(...) / $NAME).$METHOD(...)
+              - patterns:
+                  - pattern: $OBJ.$METHOD(...)
+                  - pattern-either:
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...)
+                          ...
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...) / $NAME
+                          ...
+                      - pattern-inside: |
+                          def $F(..., $OBJ: pathlib.Path, ...):
+                              ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(unlink|rmdir)$
+      - pattern: os.remove(...)
+      - pattern: os.unlink(...)
+      - pattern: os.rmdir(...)
+      - pattern: shutil.rmtree(...)
+  - id: fs-overwrite
+    languages: [python]
+    severity: INFO
+    message: Operation may replace a file or its contents.
+    metadata:
+      category: fs_overwrite
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: pathlib.Path(...).$METHOD(...)
+              - pattern: (pathlib.Path(...) / $NAME).$METHOD(...)
+              - patterns:
+                  - pattern: $OBJ.$METHOD(...)
+                  - pattern-either:
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...)
+                          ...
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...) / $NAME
+                          ...
+                      - pattern-inside: |
+                          def $F(..., $OBJ: pathlib.Path, ...):
+                              ...
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(write_text|write_bytes|rename|replace)$
+      - pattern: os.rename(...)
+      - pattern: os.replace(...)
+      - pattern: shutil.move(...)
+      - pattern: shutil.copy(...)
+      - pattern: shutil.copy2(...)
+      - pattern: shutil.copyfile(...)
+      - pattern: shutil.copytree(...)
+      - pattern: shutil.copyfileobj(...)
+      - patterns:
+          - pattern-either:
+              - pattern: open($PATH, $MODE, ...)
+              - pattern: open(..., mode=$MODE, ...)
+              - pattern: io.open($PATH, $MODE, ...)
+              - pattern: io.open(..., mode=$MODE, ...)
+              - pattern: pathlib.Path(...).open($MODE, ...)
+              - pattern: pathlib.Path(...).open(..., mode=$MODE, ...)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: ^["'](?=[rwbt+]*(?:w|\+))[rwbt+]+["']$

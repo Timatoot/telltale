@@ -1,0 +1,74 @@
+rules:
+  - id: exec
+    languages: [python]
+    severity: INFO
+    message: Operation may launch a subprocess.
+    metadata:
+      category: exec
+    pattern-either:
+      - pattern: subprocess.run(...)
+      - pattern: subprocess.Popen(...)
+      - pattern: subprocess.call(...)
+      - pattern: subprocess.check_call(...)
+      - pattern: subprocess.check_output(...)
+      - pattern: subprocess.getoutput(...)
+      - pattern: subprocess.getstatusoutput(...)
+      - pattern: os.system(...)
+      - pattern: os.popen(...)
+      - pattern: asyncio.create_subprocess_exec(...)
+      - pattern: asyncio.create_subprocess_shell(...)
+  - id: network
+    languages: [python]
+    severity: INFO
+    message: Operation may initiate an outbound connection.
+    metadata:
+      category: network
+    pattern-either:
+      - pattern: requests.get(...)
+      - pattern: requests.post(...)
+      - pattern: requests.put(...)
+      - pattern: requests.patch(...)
+      - pattern: requests.delete(...)
+      - pattern: requests.head(...)
+      - pattern: requests.options(...)
+      - pattern: requests.request(...)
+      - pattern: httpx.get(...)
+      - pattern: httpx.post(...)
+      - pattern: httpx.put(...)
+      - pattern: httpx.patch(...)
+      - pattern: httpx.delete(...)
+      - pattern: httpx.head(...)
+      - pattern: httpx.options(...)
+      - pattern: httpx.request(...)
+      - pattern: httpx.stream(...)
+      - pattern: urllib.request.urlopen(...)
+      - pattern: urllib.request.urlretrieve(...)
+      - pattern: socket.create_connection(...)
+      - patterns:
+          - pattern-either:
+              - pattern: $CLIENT(...).$METHOD(...)
+              - patterns:
+                  - pattern: $OBJ.$METHOD(...)
+                  - pattern-either:
+                      - pattern-inside: |
+                          $OBJ = $CLIENT(...)
+                          ...
+                      - pattern-inside: |
+                          def $F(..., $OBJ: $CLIENT, ...):
+                              ...
+                      - pattern-inside: |
+                          with $CLIENT(...) as $OBJ:
+                              ...
+                      - pattern-inside: |
+                          async with $CLIENT(...) as $OBJ:
+                              ...
+          - metavariable-pattern:
+              metavariable: $CLIENT
+              pattern-either:
+                - pattern: requests.Session
+                - pattern: httpx.Client
+                - pattern: httpx.AsyncClient
+                - pattern: aiohttp.ClientSession
+          - metavariable-regex:
+              metavariable: $METHOD
+              regex: ^(get|post|put|patch|delete|head|options|request|stream|send|ws_connect)$

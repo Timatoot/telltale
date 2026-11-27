@@ -1,6 +1,90 @@
 rules:
   - id: fs-read
     languages: [python]
-    message: File opened in the default read mode.
     severity: INFO
-    pattern: open($PATH)
+    message: Tool input reaches a filesystem read.
+    metadata:
+      category: fs_read
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  @$SERVER.tool(...)
+                  def $HANDLER(..., $PARAM, ...):
+                      ...
+              - pattern-inside: |
+                  @$SERVER.tool
+                  def $HANDLER(..., $PARAM, ...):
+                      ...
+              - pattern-inside: |
+                  @$SERVER.call_tool(...)
+                  def $HANDLER(..., $PARAM, ...):
+                      ...
+              - pattern-inside: |
+                  def $HANDLER(..., $PARAM, ...):
+                      ...
+                  ...
+                  $SERVER.add_tool($HANDLER, ...)
+          - focus-metavariable: $PARAM
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: open($PATH, ...)
+              - pattern: io.open($PATH, ...)
+              - pattern: open(file=$PATH, ...)
+              - pattern: io.open(file=$PATH, ...)
+              - pattern: $PATH.open(...)
+          - pattern-not: open($PATH, $MODE, ...)
+          - pattern-not: open(..., mode=$MODE, ...)
+          - pattern-not: io.open($PATH, $MODE, ...)
+          - pattern-not: io.open(..., mode=$MODE, ...)
+          - pattern-not: $PATH.open($MODE, ...)
+          - pattern-not: $PATH.open(..., mode=$MODE, ...)
+          - focus-metavariable: $PATH
+      - patterns:
+          - pattern-either:
+              - pattern: open($PATH, $MODE, ...)
+              - pattern: io.open($PATH, $MODE, ...)
+              - pattern: open($PATH, ..., mode=$MODE, ...)
+              - pattern: io.open($PATH, ..., mode=$MODE, ...)
+              - pattern: open(..., file=$PATH, ..., mode=$MODE, ...)
+              - pattern: io.open(..., file=$PATH, ..., mode=$MODE, ...)
+              - pattern: $PATH.open($MODE, ...)
+              - pattern: $PATH.open(..., mode=$MODE, ...)
+          - metavariable-regex:
+              metavariable: $MODE
+              regex: ^["'](?:[rbt]*r[rbt]*|[rwaxbt+]*\+[rwaxbt+]*)["']$
+          - focus-metavariable: $PATH
+      - patterns:
+          - pattern-either:
+              - pattern: os.open($PATH, $FLAGS, ...)
+              - pattern: os.open($PATH, flags=$FLAGS, ...)
+              - pattern: os.open(..., path=$PATH, ..., flags=$FLAGS, ...)
+          - pattern-not: os.open(..., <... os.O_WRONLY ...>, ...)
+          - pattern-not: os.open(..., flags=<... os.O_WRONLY ...>, ...)
+          - focus-metavariable: $PATH
+      - patterns:
+          - pattern-either:
+              - pattern: $PATH.read_text(...)
+              - pattern: $PATH.read_bytes(...)
+          - focus-metavariable: $PATH
+    pattern-sanitizers:
+      # Focus on the receiver of the guarded return. A sibling branch or a
+      # later read of the same variable still receives its original taint.
+      - patterns:
+          - patterns:
+              - pattern: |
+                  $ROOT = pathlib.Path("...").resolve()
+                  $PATH = ($ROOT / $NAME).resolve()
+                  if $PATH.is_relative_to($ROOT):
+                      return $READ
+              - focus-metavariable: $READ
+          - pattern-either:
+              - pattern: $PATH.read_text()
+              - pattern: $PATH.read_bytes()
+              - pattern: $PATH.open()
+              - pattern: open($PATH)
+              - pattern: io.open($PATH)
+          - focus-metavariable: $PATH
+        exact: true
