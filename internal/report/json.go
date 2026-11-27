@@ -160,7 +160,10 @@ func (p *presentation) coverage(c model.Coverage, mode string) model.Coverage {
 		return v
 	})
 	c.ParseErrors = project(c.ParseErrors, func(v model.ParseError) model.ParseError {
-		v.Path = p.path(v.Path)
+		// Opengrep can report an error for the entire scan.
+		if v.Path != "" || v.Engine != string(model.SourceOpengrep) {
+			v.Path = p.path(v.Path)
+		}
 		v.Engine = p.ident(v.Engine)
 		v.Reason = p.text(v.Reason)
 		return v

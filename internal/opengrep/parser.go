@@ -14,8 +14,20 @@ import (
 
 // SinkMatch identifies an embedded rule and its 1-based, end-exclusive span.
 type SinkMatch struct {
-	RuleID string
-	Span   model.Location
+	RuleID           string
+	Span             model.Location
+	TaintedParameter string
+	PathValueSpan    model.Location // Optional propagated value of the focused path.
+
+	// Filled from the Python CST after joining this span to a tool handler.
+	ToolID           string
+	HandlerSpan      model.Location
+	NormalizedCallee string
+	CallSpan         model.Location
+}
+
+func (m SinkMatch) Category() string {
+	return strings.ReplaceAll(m.RuleID, "-", "_")
 }
 
 type Result struct {
@@ -59,6 +71,19 @@ type scanOutput struct {
 		CheckID    string `json:"check_id"`
 		Path       string
 		Start, End position
+		Extra      struct {
+			Metavars struct {
+				Parameter struct {
+					Content string `json:"abstract_content"`
+				} `json:"$PARAM"`
+				Path struct {
+					Value struct {
+						Start position `json:"svalue_start"`
+						End   position `json:"svalue_end"`
+					} `json:"propagated_value"`
+				} `json:"$PATH"`
+			}
+		}
 	}]
 	Errors records[struct {
 		Path string
@@ -120,7 +145,13 @@ func parseScan(data []byte, files []string, repoRel func(string) (string, bool))
 		if id == "" || hit.Start.Line < 1 || hit.Start.Col < 1 || hit.End.Col < 1 || hit.End.Line < hit.Start.Line || hit.End.Line == hit.Start.Line && hit.End.Col < hit.Start.Col {
 			return Result{}, errors.New("invalid match ID or span")
 		}
-		result.Matches = append(result.Matches, SinkMatch{RuleID: id, Span: model.Location{Path: rel, StartLine: hit.Start.Line, StartColumn: hit.Start.Col, EndLine: hit.End.Line, EndColumn: hit.End.Col}})
+		m := SinkMatch{RuleID: id, Span: model.Location{Path: rel, StartLine: hit.Start.Line, StartColumn: hit.Start.Col, EndLine: hit.End.Line, EndColumn: hit.End.Col},
+			TaintedParameter: hit.Extra.Metavars.Parameter.Content}
+		v := hit.Extra.Metavars.Path.Value
+		if v.Start.Line > 0 && v.Start.Col > 0 && v.End.Line >= v.Start.Line && v.End.Col > 0 {
+			m.PathValueSpan = model.Location{Path: rel, StartLine: v.Start.Line, StartColumn: v.Start.Col, EndLine: v.End.Line, EndColumn: v.End.Col}
+		}
+		result.Matches = append(result.Matches, m)
 	}
 	slices.SortFunc(result.Matches, func(a, b SinkMatch) int {
 		return cmp.Or(cmp.Compare(a.Span.Path, b.Span.Path), cmp.Compare(a.Span.StartLine, b.Span.StartLine), cmp.Compare(a.Span.StartColumn, b.Span.StartColumn), cmp.Compare(a.Span.EndLine, b.Span.EndLine), cmp.Compare(a.Span.EndColumn, b.Span.EndColumn), cmp.Compare(a.RuleID, b.RuleID))

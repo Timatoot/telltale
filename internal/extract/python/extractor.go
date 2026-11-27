@@ -16,6 +16,7 @@ import (
 
 	"github.com/Timatoot/telltale/internal/ingest"
 	"github.com/Timatoot/telltale/internal/model"
+	"github.com/Timatoot/telltale/internal/opengrep"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 )
 
 type Result struct {
+	Matches                 []opengrep.SinkMatch
 	Tools                   []model.ToolFact
 	ParseErrors             []model.ParseError
 	UnresolvedDescriptions  []model.UnresolvedDescription
@@ -34,6 +36,15 @@ type Result struct {
 // Extract reads only the bounded, private snapshot. A file that cannot be
 // parsed contributes a coverage record and never publishes partial facts.
 func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
+	return ExtractWithMatches(ctx, snap, nil)
+}
+
+// ExtractWithMatches joins engine spans while each snapshot file's CST is open.
+func ExtractWithMatches(ctx context.Context, snap *ingest.Snapshot, matches []opengrep.SinkMatch) (Result, error) {
+	byFile := make(map[string][]opengrep.SinkMatch)
+	for _, m := range matches {
+		byFile[m.Span.Path] = append(byFile[m.Span.Path], m)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	p := sitter.NewParser()
@@ -51,7 +62,7 @@ func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
 		if err != nil {
 			return Result{}, fmt.Errorf("read snapshot %q: %w", path, err)
 		}
-		f := sourceFile{data: data, path: path, modules: modules}
+		f := sourceFile{data: data, path: path, modules: modules, rawSinks: byFile[path]}
 		reason := f.parse(ctx, p)
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -65,27 +76,38 @@ func Extract(ctx context.Context, snap *ingest.Snapshot) (Result, error) {
 		result.UnresolvedRegistrations = append(result.UnresolvedRegistrations, f.registrations...)
 		result.CrossFileHelperCalls = append(result.CrossFileHelperCalls, f.helperCalls...)
 		result.Tools = append(result.Tools, f.tools...)
+		result.Matches = append(result.Matches, f.matches...)
+		if f.sinkSpanGap {
+			result.ParseErrors = append(result.ParseErrors, model.ParseError{Path: path, Engine: "opengrep", Reason: "unresolved_sink_span"})
+		}
+		if f.taintGap {
+			result.ParseErrors = append(result.ParseErrors, model.ParseError{Path: path, Engine: "opengrep", Reason: "unresolved_taint_parameter"})
+		}
 		result.UnresolvedDescriptions = append(result.UnresolvedDescriptions, f.gaps...)
 	}
 	return result, nil
 }
 
 type sourceFile struct {
-	data          []byte
-	path          string
-	tools         []model.ToolFact
-	gaps          []model.UnresolvedDescription
-	ordinals      map[string]int
-	expanded      int
-	unknown       int
-	registrations []model.UnresolvedRegistration
-	modules       map[string]string
-	helperCalls   []model.HelperCall
-	helperRefs    []helperReference
-	bodyModules   map[uintptr]map[string]struct{}
-	handlers      []handlerUse
-	lowHandlers   map[uintptr]lowHandler
-	listings      []listedTool
+	rawSinks, matches     []opengrep.SinkMatch
+	callSinks             map[uintptr][]indexedSink
+	bodySinks             map[uintptr][]opengrep.SinkMatch
+	taintGap, sinkSpanGap bool
+	data                  []byte
+	path                  string
+	tools                 []model.ToolFact
+	gaps                  []model.UnresolvedDescription
+	ordinals              map[string]int
+	expanded              int
+	unknown               int
+	registrations         []model.UnresolvedRegistration
+	modules               map[string]string
+	helperCalls           []model.HelperCall
+	helperRefs            []helperReference
+	bodyModules           map[uintptr]map[string]struct{}
+	handlers              []handlerUse
+	lowHandlers           map[uintptr]lowHandler
+	listings              []listedTool
 }
 
 func (f *sourceFile) parse(ctx context.Context, p *sitter.Parser) string {
@@ -127,6 +149,9 @@ func (f *sourceFile) parse(ctx context.Context, p *sitter.Parser) string {
 	if root.HasError() {
 		return "syntax_error"
 	}
+	if reason := f.indexSinks(ctx, root); reason != "" {
+		return reason
+	}
 	f.ordinals = make(map[string]int)
 	cursor := root.Walk()
 	defer cursor.Close()
@@ -135,7 +160,7 @@ func (f *sourceFile) parse(ctx context.Context, p *sitter.Parser) string {
 	if reason := f.walk(ctx, cursor, 0, &scope{names: make(map[string]binding)}, walkState{}); reason != "" {
 		return reason
 	}
-	if !f.resolveHelpers(ctx) || !f.finishHandlers(ctx) {
+	if !f.resolveHelpers(ctx) || !f.finishHandlers(ctx) || !f.joinSinks(ctx) {
 		if ctx.Err() != nil {
 			return "timeout"
 		}
@@ -189,7 +214,7 @@ func (f *sourceFile) walk(ctx context.Context, c *sitter.TreeCursor, depth int, 
 	case "while_statement", "list_comprehension", "set_comprehension", "dictionary_comprehension", "generator_expression":
 		state.loop = true
 	case "call":
-		if !f.addTool(n, env, state.loop) || !f.observeHelper(n, env, state.body) {
+		if !f.observeSinks(n, env, state) || !f.addTool(n, env, state.loop) || !f.observeHelper(n, env, state.body) {
 			return "resource_limit"
 		}
 	case "decorator":

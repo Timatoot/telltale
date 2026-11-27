@@ -12,7 +12,9 @@ import (
 	"github.com/Timatoot/telltale/internal/extract/python"
 	"github.com/Timatoot/telltale/internal/ingest"
 	"github.com/Timatoot/telltale/internal/model"
+	"github.com/Timatoot/telltale/internal/opengrep"
 	"github.com/Timatoot/telltale/internal/report"
+	"github.com/Timatoot/telltale/internal/rules"
 )
 
 const (
@@ -25,6 +27,15 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	return runAudit(args, stdout, stderr, opengrep.SinkAnalyzer{})
+}
+
+type sinkAnalyzer interface {
+	Preflight(context.Context) (string, error)
+	Analyze(context.Context, *ingest.Snapshot) (opengrep.Result, error)
+}
+
+func runAudit(args []string, stdout, stderr io.Writer, analyzer sinkAnalyzer) int {
 	cfg, err := config.Parse(args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
@@ -42,24 +53,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitFatalError
 	}
 
-	inventory, coverage, err := scanPython(context.Background(), cfg.RepoPath)
+	scan, err := scanPython(context.Background(), cfg.RepoPath, analyzer)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
 	}
 
+	scan.Target = model.Target{RepoName: repoName, Mode: "static"}
+	scan.ApplyPolicy(model.Policy{FailOn: model.Severity(cfg.FailOn), VerifiedOnly: cfg.VerifiedOnly, Strict: cfg.Strict})
 	if cfg.JSONPath != "" {
-		scan := model.ScanReport{
-			SchemaVersion: model.SchemaVersion,
-			Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none"},
-			Target:        model.Target{RepoName: repoName, Mode: "static"},
-			Coverage:      coverage,
-			Inventory:     inventory,
-			Summary: model.Summary{
-				CoverageComplete: len(coverage.FilesSkipped) == 0 && len(coverage.ParseErrors) == 0 && len(coverage.UnresolvedRegistrations) == 0,
-				PolicyPassed:     true, AnalysisExitCode: exitPass,
-			},
-		}
 		payload, err := report.RenderJSON(&scan, "")
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "telltale: render json report: %s\n", report.Sanitize(err.Error(), "", 4096))
@@ -72,8 +74,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=0 status=pass\n", report.SanitizeIdentifier(repoName, "", 4096))
-	return exitPass
+	status := "pass"
+	switch scan.Summary.AnalysisExitCode {
+	case 1:
+		status = "policy_violation"
+	case 3:
+		status = "incomplete"
+	}
+	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=%d status=%s\n", report.SanitizeIdentifier(repoName, "", 4096), len(scan.Findings), status)
+	return scan.Summary.AnalysisExitCode
 }
 
 func rejectUnfinishedModes(cfg config.Config) error {
@@ -89,22 +98,36 @@ func rejectUnfinishedModes(cfg config.Config) error {
 	return nil
 }
 
-func scanPython(ctx context.Context, repoPath string) (_ []model.ToolFact, _ model.Coverage, err error) {
+func scanPython(ctx context.Context, repoPath string, analyzer sinkAnalyzer) (_ model.ScanReport, err error) {
+	version, err := analyzer.Preflight(ctx)
+	if err != nil {
+		return model.ScanReport{}, err
+	}
 	snap, err := ingest.CreateSnapshot(ctx, repoPath, "")
 	if err != nil {
-		return nil, model.Coverage{}, err
+		return model.ScanReport{}, err
 	}
 	defer func() { err = errors.Join(err, snap.Close()) }()
-	result, err := python.Extract(ctx, snap)
+	sinks, err := analyzer.Analyze(ctx, snap)
 	if err != nil {
-		return nil, model.Coverage{}, err
+		return model.ScanReport{}, err
 	}
-	return result.Tools, model.Coverage{
-		FilesScanned: len(snap.Files), FilesSkipped: snap.FilesSkipped,
-		ToolsDiscovered: len(result.Tools), ParseErrors: result.ParseErrors,
-		UnresolvedDescriptions:  result.UnresolvedDescriptions,
-		UnresolvedRegistrations: result.UnresolvedRegistrations,
-		AnalysisLimits:          model.AnalysisLimits{CrossFileHelperCalls: result.CrossFileHelperCalls},
+	result, err := python.ExtractWithMatches(ctx, snap, sinks.Matches)
+	if err != nil {
+		return model.ScanReport{}, err
+	}
+	eval := rules.Evaluate(result.Tools, result.Matches, false)
+	return model.ScanReport{
+		SchemaVersion: model.SchemaVersion,
+		Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none", OpengrepVersion: version},
+		Inventory:     eval.Inventory, Findings: eval.Findings,
+		Coverage: model.Coverage{
+			FilesScanned: len(snap.Files) - len(sinks.FilesSkipped), FilesSkipped: append(snap.FilesSkipped, sinks.FilesSkipped...),
+			ToolsDiscovered: len(result.Tools), ParseErrors: append(result.ParseErrors, sinks.ParseErrors...),
+			UnresolvedDescriptions:  result.UnresolvedDescriptions,
+			UnresolvedRegistrations: result.UnresolvedRegistrations,
+			AnalysisLimits:          model.AnalysisLimits{CrossFileHelperCalls: result.CrossFileHelperCalls},
+		},
 	}, nil
 }
 

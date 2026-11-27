@@ -349,16 +349,16 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[CREATE]` `internal/rules/engine_test.go`
   - `[MODIFY]` `cmd/telltale/main.go`
 - **Tasks:**
-  1. [ ] First implement SPEC §5 policy and summary calculation in `internal/model/policy.go`. Table-test the severity threshold, default and verified-only gates, every dynamic status, strict coverage, confidence independence, precedence `2 > 1 > 3 > 0` and analysis exit codes limited to 0/1/3. Gate with `go test -race -count=1 ./internal/model/...` before wiring rule evaluation.
-  2. [ ] Implement `internal/rules/poison.go` exposing a pure reusable text evaluator (`EvalPoisonText`) used by both static and runtime paths:
+  1. [x] First implement SPEC §5 policy and summary calculation in `internal/model/policy.go`. Table-test the severity threshold, default and verified-only gates, every dynamic status, strict coverage, confidence independence, precedence `2 > 1 > 3 > 0` and analysis exit codes limited to 0/1/3. Gate with `go test -race -count=1 ./internal/model/...` before wiring rule evaluation.
+  2. [x] Implement `internal/rules/poison.go` exposing a pure reusable text evaluator (`EvalPoisonText`) used by both static and runtime paths:
      - Invisible/bidi/zero-width/control codepoints in resolved text → `POISON-INVISIBLE-UNICODE` (`static_status: proven`, high severity/confidence).
      - Prompt-override imperatives, hidden exfil/credential directives, misleading cross-tool references → `POISON-PROMPT-OVERRIDE`, `POISON-HIDDEN-EXFIL`, `POISON-CROSS-TOOL-MISLEAD` (`static_status: suspected`).
      - Never evaluates unresolved descriptions (`description_resolved == false`).
-  3. [ ] Implement `internal/rules/contract.go`: correlate explicit `readOnlyHint=true`, `destructiveHint=false`, `openWorldHint=false` against handler-span Opengrep sinks. Missing/`null` annotations never emit findings. Emit `VerificationHypothesis` for `readOnlyHint=true` and `destructiveHint=false`; mark `openWorldHint=false` non-verifiable (`not_applicable` in verify mode).
-  4. [ ] Implement `internal/rules/fs.go`: correlate single-file taint `SinkMatch`es to enclosing MCP tool handlers and tainted parameter names; emit `FS-PATH-TRAVERSAL` (`static_status: suspected`) and FS `VerificationHypothesis`.
-  5. [ ] Implement `internal/rules/engine.go`: attach matched sinks to `ToolFact.InferredSinks`, compute content-based fingerprints via `model/identity.go`, populate CWE mappings and structured `EvidenceItem`s, initialize `dynamic_status: not_run`, and return deterministic sorted `[]Finding` + `[]VerificationHypothesis`.
-  6. [ ] Write `internal/rules/engine_test.go` validating the approved severity for every rule ID, `proven` vs `suspected` status, unannotated dangerous tool producing zero findings, unresolved description producing zero findings, deterministic ordinals for repeated callees, and hypothesis emission.
-  7. [ ] Wire Opengrep preflight (before ingestion), Opengrep `Analyze` (on the shared snapshot), and `rules.Evaluate` into `cmd/telltale/main.go` so static `telltale audit <repo>` runs end-to-end.
+  3. [x] Implement `internal/rules/contract.go`: correlate explicit `readOnlyHint=true`, `destructiveHint=false`, `openWorldHint=false` against handler-span Opengrep sinks. Missing/`null` annotations never emit findings. Emit `VerificationHypothesis` for `readOnlyHint=true` and `destructiveHint=false`; mark `openWorldHint=false` non-verifiable (`not_applicable` in verify mode).
+  4. [x] Implement `internal/rules/fs.go`: correlate single-file taint `SinkMatch`es to enclosing MCP tool handlers and tainted parameter names; emit `FS-PATH-TRAVERSAL` (`static_status: suspected`) and FS `VerificationHypothesis`.
+  5. [x] Implement `internal/rules/engine.go`: attach matched sinks to `ToolFact.InferredSinks`, compute content-based fingerprints via `model/identity.go`, populate CWE mappings and structured `EvidenceItem`s, initialize `dynamic_status: not_run`, and return deterministic sorted `[]Finding` + `[]VerificationHypothesis`.
+  6. [x] Write `internal/rules/engine_test.go` validating the approved severity for every rule ID, `proven` vs `suspected` status, unannotated dangerous tool producing zero findings, unresolved description producing zero findings, deterministic ordinals for repeated callees, and hypothesis emission.
+  7. [x] Wire Opengrep preflight (before ingestion), Opengrep `Analyze` (on the shared snapshot), and `rules.Evaluate` into `cmd/telltale/main.go` so static `telltale audit <repo>` runs end-to-end.
 - **CLI Verification:**
   ```bash
   CGO_ENABLED=1 go build -o bin/telltale ./cmd/telltale && go test -race -count=1 ./internal/model/... ./internal/rules/... ./cmd/telltale/... && golangci-lint run ./...

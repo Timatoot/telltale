@@ -6,8 +6,8 @@
 
 0. **Preflight** — Validates CLI flags (including `--run-cmd` tokenization), Opengrep version/capability, and, with `--verify`, Rootless Podman capability and local image presence. Every fatal condition is detected here, before analysis begins, and exits `2`.
 1. **Target Ingestion & Snapshot** — Walks the repository via `os.Root` without following symlinks. Enforces file type/size/count budgets and copies in-budget regular `.py` files into a private per-run snapshot directory. All later static stages read only this snapshot, so Tree-sitter and Opengrep see the identical file set and bytes.
-2. **Static Metadata Extraction (`go-tree-sitter`)** — Parses the snapshot via CGo without executing Python. Extracts supported MCP tool registrations (`FastMCP` / `MCPServer` decorators and supported low-level patterns), docstrings, parameter schemas, `ToolAnnotations`, line/column spans, unresolved registrations/descriptions, and cross-file helper calls.
-3. **Static Sink & Taint Analysis (`opengrep`)** — Runs embedded Semgrep-compatible YAML rules via the native `opengrep` CLI against the snapshot (single-file only).
+2. **Static Sink & Taint Analysis (`opengrep`)** — Runs embedded single-file rules on the snapshot and returns match spans and tainted parameter bindings.
+3. **Static Metadata Extraction (`go-tree-sitter`)** — Parses each snapshot file once. It extracts MCP registrations and their metadata, joins match spans to calls inside tool handlers, and records coverage gaps and cross-file helper calls.
 4. **Fact Model & Static Rule Engine** — Normalizes declared metadata and inferred sink/taint signals into a fact structure. Runs deterministic `POISON-*`, `CONTRACT-*`, and `FS-*` evaluators and emits static findings plus verification hypotheses.
 5. **Dynamic Verification Orchestrator (Optional, `--verify`)** — Runs one inventory session (live `tools/list` reconciliation), then one fresh hardened container per hypothesis using a pre-existing local image. Speaks MCP JSON-RPC 2.0 over stdio natively in Go, records independent host-side observations, and sets `dynamic_status` per the state model (§4.5).
 6. **Reporting Layer** — Renders Terminal output, Canonical JSON, SARIF 2.1.0, and Standalone HTML from a single immutable `ScanReport`; writes artifacts atomically.
@@ -62,7 +62,7 @@ Top-level object fields:
 * **`coverage`** (`object`):
   * `files_scanned` (int)
   * `files_skipped` (array of `path`/`reason`; reason ∈ `symlink` | `non_regular` | `size_cap` | `count_cap` | `total_cap` | `engine_skipped`)
-  * `parse_errors` (array of `path`/`engine`/`reason`)
+  * `parse_errors` (array of `path`/`engine`/`reason`). A scan-wide Opengrep diagnostic uses an empty `path`.
   * `tools_discovered` (int)
   * `unresolved_registrations` (array of `path`/`line`/`reason`)
   * `unresolved_descriptions` (array of `tool_id`/`field`)

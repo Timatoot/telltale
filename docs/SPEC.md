@@ -15,8 +15,8 @@
 1. User runs `telltale audit <repo-path>` with optional CLI flags (`--json`, `--sarif`, `--html`, `--fail-on`, `--verified-only`, `--strict`).
 2. `telltale` inspects the repository without importing, building, or executing any target code, and without invoking `git` or any other tool that reads repository-controlled configuration.
 3. Ingestion copies the in-budget regular `.py` files into a private per-run snapshot directory; every later static stage reads only that snapshot (see ARCHITECTURE §4.4 "Repository Snapshot Boundary").
-4. Static extraction parses the snapshot for MCP tool registrations, docstrings, parameter schemas, annotations, and source spans, explicitly recording unparseable files and unresolved dynamic registrations as incomplete coverage.
-5. Opengrep evaluates embedded v1 YAML sink/taint rules against the same snapshot and `telltale` correlates matches to extracted MCP tool handlers.
+4. Opengrep evaluates embedded v1 rules against the snapshot and returns sink spans and single-file taint evidence.
+5. Static extraction parses the same snapshot for MCP registrations, docstrings, parameter schemas and annotations. It correlates sink spans with tool handlers and records unparseable files and unresolved registrations as coverage gaps.
 6. `telltale` prints a terminal summary, writes any requested artifacts atomically (Canonical JSON, SARIF 2.1.0, standalone HTML), and exits according to the exit-code contract (§5).
 
 ### Flow B: Opt-In Hardened Container Verification (`--verify`)
@@ -62,6 +62,7 @@
   * A dynamic outcome can only *add* proof (`confirmed`). `not_reproduced`, `inconclusive`, and `skipped` never downgrade a finding or remove it from the policy gate.
   * Never label a legitimate dangerous capability (e.g., an unannotated delete tool, or a file reader run without a `{workspace}` boundary claim) as a confirmed vulnerability.
   * `coverage_complete` is `false` when there are parse errors, unresolved registrations, files skipped by budget/type/engine, or ambiguous inventory joins (verify mode).
+  * A scan-wide Opengrep diagnostic appears in `parse_errors` with an empty `path` and counts toward incomplete coverage.
   * Cross-file helper calls from tool handlers into other repository modules are counted in `analysis_limits`. They are a documented v1 limit and do not affect `coverage_complete`.
 * **Canary Hygiene:** Every verification run generates two independent `crypto/rand` values: a canary filename (`<file-id>`, ≥128 bits) and a content token (≥256 bits). The content token never appears in tool inputs. Evidence records only the matched encoding variant and location, never the token itself. All temporary fixtures are destroyed on exit.
 * **Safe, Deterministic Reporting:**

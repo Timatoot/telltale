@@ -172,3 +172,13 @@ func TestDiagnosticTail(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTaintSource(t *testing.T) {
+	a := analyzer(t)
+	s := snapshot(t, a)
+	fake(t, `echo '{"results":[{"check_id":"rules.fs-read","path":"read.py","start":{"line":14,"col":15},"end":{"line":14,"col":19},"extra":{"metavars":{"$PARAM":{"abstract_content":"source_name"},"$PATH":{"abstract_content":"alias"}}}}],"paths":{"scanned":["read.py","benign.py"]},"errors":[]}'`)
+	result, err := a.Analyze(t.Context(), s)
+	if err != nil || len(result.Matches) != 1 || result.Matches[0].TaintedParameter != "source_name" {
+		t.Fatalf("taint binding: %+v, %v", result, err)
+	}
+}
