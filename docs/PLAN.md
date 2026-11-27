@@ -291,13 +291,13 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[CREATE]` `internal/opengrep/rules/fs_read.yaml`
   - `[CREATE]` `internal/opengrep/rules/fs_read.py`
 - **Tasks:**
-  1. [ ] Implement `internal/opengrep/embed.go` using `go:embed` for `rules/*.yaml` and `selftest_fixture.py` (embedded micro-fixture).
-  2. [ ] Author an initial minimal valid v1 rule `internal/opengrep/rules/fs_read.yaml` and matching Opengrep rule test `internal/opengrep/rules/fs_read.py` so `opengrep validate` and `opengrep test` work end-to-end starting in this slice.
-  3. [ ] Implement `internal/opengrep/runner.go` (`SinkAnalyzer`):
+  1. [x] Implement `internal/opengrep/embed.go` using `go:embed` for `rules/*.yaml` and `selftest_fixture.py` (embedded micro-fixture).
+  2. [x] Author an initial minimal valid v1 rule `internal/opengrep/rules/fs_read.yaml` and matching Opengrep rule test `internal/opengrep/rules/fs_read.py` so `opengrep validate` and `opengrep test` work end-to-end starting in this slice.
+  3. [x] Implement `internal/opengrep/runner.go` (`SinkAnalyzer`):
      - `Preflight(ctx)`: invokes `opengrep --version` via `exec.CommandContext` (no shell), validates SemVer `>= 2.0.0, < 3.0.0`, materializes embedded rules + `selftest_fixture.py` to a private `0700` temp dir, runs `opengrep scan --config <rules-dir> --json --quiet --disable-nosem --max-target-bytes 1048576 --timeout 30 <selftest-dir>`, verifies the fixture appears in `paths.scanned`, and cleans up via deferred teardown. Any failure returns a typed fatal error (exit `2`).
      - `Analyze(ctx, snapshot)`: runs the exact same flag set (never `--enable-interfile`) against `snapshot.Dir()`, caps stdout at 64 MiB (exceeding is fatal exit `2`), captures stderr in a bounded ring buffer, treats exit codes `0` and `3` as parseable JSON and any other code as fatal exit `2`.
-  4. [ ] Implement `internal/opengrep/parser.go`: parses Opengrep JSON output into normalized `[]SinkMatch` (repo-relative POSIX paths), maps every `errors[]` entry to `coverage.parse_errors` (`engine: "opengrep"`), and diffs `paths.scanned` against the snapshot file list to emit `coverage.files_skipped` (`reason: "engine_skipped"`).
-  5. [ ] **[RISK-01 & RISK-03 Test]** Write `internal/opengrep/runner_test.go` (using hermetic fake `opengrep` executable scripts in `t.TempDir()` + real parser tests) covering:
+  4. [x] Implement `internal/opengrep/parser.go`: parses Opengrep JSON output into normalized `[]SinkMatch` (repo-relative POSIX paths), maps every `errors[]` entry to `coverage.parse_errors` (`engine: "opengrep"`), and diffs `paths.scanned` against the snapshot file list to emit `coverage.files_skipped` (`reason: "engine_skipped"`).
+  5. [x] **[RISK-01 & RISK-03 Test]** Write `internal/opengrep/runner_test.go` (using hermetic fake `opengrep` executable scripts in `t.TempDir()` + real parser tests) covering:
      - Parse errors reported in `errors[]` with exit code `0` (and exit `3`) → recorded in `parse_errors`, not dropped.
      - Snapshot file absent from `paths.scanned` → `files_skipped` (`engine_skipped`).
      - Unsupported version (`1.9.0`, `3.0.0`), missing binary, rejected CLI flag during self-test, non-`0`/`3` exit code, and >64 MiB stdout cap → all return fatal error (exit `2`).
@@ -306,6 +306,7 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   ```bash
   go test -race -count=1 ./internal/opengrep/... && opengrep validate ./internal/opengrep/rules && opengrep test ./internal/opengrep/rules && golangci-lint run ./...
   ```
+  - [x] Confirm `opengrep validate ./internal/opengrep/rules` with registry access. Validation passed for one rule with zero fatal or skippable errors.
 
 ---
 

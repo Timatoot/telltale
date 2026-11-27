@@ -1,0 +1,6 @@
+rules:
+  - id: fs-read
+    languages: [python]
+    message: File opened in the default read mode.
+    severity: INFO
+    pattern: open($PATH)
