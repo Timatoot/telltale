@@ -62,6 +62,7 @@
   * A dynamic outcome can only *add* proof (`confirmed`). `not_reproduced`, `inconclusive`, and `skipped` never downgrade a finding or remove it from the policy gate.
   * Never label a legitimate dangerous capability (e.g., an unannotated delete tool, or a file reader run without a `{workspace}` boundary claim) as a confirmed vulnerability.
   * `coverage_complete` is `false` when there are parse errors, unresolved registrations, files skipped by budget/type/engine, or ambiguous inventory joins (verify mode).
+  * A failed MCP inventory records a scan-wide diagnostic with an empty `path`, `engine: "mcp"`, and the dynamic failure reason in `parse_errors`. This makes coverage incomplete even when there are no findings.
   * A scan-wide Opengrep diagnostic appears in `parse_errors` with an empty `path` and counts toward incomplete coverage.
   * Cross-file helper calls from tool handlers into other repository modules are counted in `analysis_limits`. They are a documented v1 limit and do not affect `coverage_complete`.
 * **Canary Hygiene:** Every verification run generates two independent `crypto/rand` values: a canary filename (`<file-id>`, ≥128 bits) and a content token (≥256 bits). The content token never appears in tool inputs. Evidence records only the matched encoding variant and location, never the token itself. All temporary fixtures are destroyed on exit.

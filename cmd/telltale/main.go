@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"syscall"
@@ -17,6 +18,8 @@ import (
 	"github.com/Timatoot/telltale/internal/opengrep"
 	"github.com/Timatoot/telltale/internal/report"
 	"github.com/Timatoot/telltale/internal/rules"
+	"github.com/Timatoot/telltale/internal/sandbox"
+	"github.com/Timatoot/telltale/internal/verify"
 )
 
 const (
@@ -25,11 +28,14 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == guardArg {
+		os.Exit(cleanupGuardMain())
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	return runAudit(args, stdout, stderr, opengrep.SinkAnalyzer{})
+	return runAudit(args, stdout, stderr, opengrep.SinkAnalyzer{}, verify.Podman{})
 }
 
 type sinkAnalyzer interface {
@@ -37,18 +43,22 @@ type sinkAnalyzer interface {
 	Analyze(context.Context, *ingest.Snapshot) (opengrep.Result, error)
 }
 
-func runAudit(args []string, stdout, stderr io.Writer, analyzer sinkAnalyzer) int {
+func runAudit(args []string, stdout, stderr io.Writer, analyzer sinkAnalyzer, runtime verify.Runtime) int {
 	cfg, err := config.Parse(args)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
 	}
 
+	var output auditOutput
 	if cfg.Verify {
-		_, _ = fmt.Fprintln(stderr, "telltale: --verify mode is not yet implemented")
-		return exitFatalError
+		if _, ok := runtime.(verify.Podman); ok {
+			runtime = verify.Podman{ContainerRuntime: sandbox.ContainerRuntime{Image: cfg.Image}}
+		}
+		output, err = prepareVerify(cfg, analyzer, runtime, cfg.NoColor || !terminalOutput(stdout))
+	} else {
+		output, err = prepareAudit(context.Background(), cfg, analyzer, cfg.NoColor || !terminalOutput(stdout), nil)
 	}
-	output, err := prepareAudit(context.Background(), cfg, analyzer, cfg.NoColor || !terminalOutput(stdout))
 	if err == nil {
 		err = publish(output.artifacts, func() error {
 			_, err := stdout.Write(output.terminal)
@@ -60,6 +70,47 @@ func runAudit(args []string, stdout, stderr io.Writer, analyzer sinkAnalyzer) in
 		return exitFatalError
 	}
 	return output.code
+}
+
+func prepareVerify(cfg config.Config, analyzer sinkAnalyzer, runtime verify.Runtime, noColor bool) (_ auditOutput, err error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	abort := make(chan struct{})
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-signals:
+			cancel()
+		case <-done:
+			return
+		}
+		select {
+		case <-signals:
+			close(abort)
+		case <-done:
+		}
+	}()
+	guard, err := startCleanupGuard(ctx)
+	if err != nil {
+		return auditOutput{}, err
+	}
+	defer func() { err = errors.Join(err, guard.close()) }()
+	info, err := runtime.Preflight(ctx)
+	if err != nil {
+		return auditOutput{}, err
+	}
+	if _, err := guard.owner.Write([]byte{'A'}); err != nil {
+		return auditOutput{}, err
+	}
+	if _, ok := analyzer.(opengrep.SinkAnalyzer); ok {
+		analyzer = opengrep.SinkAnalyzer{RunDir: guard.Dir}
+	}
+	orchestrator := verify.Orchestrator{Runtime: runtime, Info: info, RunID: guard.ID, RunDir: guard.Dir, Abort: abort}
+	return prepareAudit(ctx, cfg, analyzer, noColor, &orchestrator)
 }
 
 func terminalOutput(w io.Writer) bool {
@@ -78,7 +129,7 @@ type auditOutput struct {
 }
 
 // Finish rendering and close the snapshot before publishing any results.
-func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer, noColor bool) (_ auditOutput, err error) {
+func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer, noColor bool, orchestrator *verify.Orchestrator) (_ auditOutput, err error) {
 	repoName, err := repositoryName(cfg.RepoPath)
 	if err != nil {
 		return auditOutput{}, err
@@ -87,7 +138,11 @@ func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer,
 	if err != nil {
 		return auditOutput{}, err
 	}
-	snap, err := ingest.CreateSnapshot(ctx, cfg.RepoPath, "")
+	parent := ""
+	if orchestrator != nil {
+		parent = orchestrator.RunDir
+	}
+	snap, err := ingest.CreateSnapshot(ctx, cfg.RepoPath, parent)
 	if err != nil {
 		return auditOutput{}, err
 	}
@@ -100,7 +155,7 @@ func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer,
 	if err != nil {
 		return auditOutput{}, err
 	}
-	eval := rules.Evaluate(result.Tools, result.Matches, false)
+	eval := rules.Evaluate(result.Tools, result.Matches, cfg.Verify)
 	scan := model.ScanReport{
 		Target:        model.Target{RepoName: repoName, Mode: "static"},
 		SchemaVersion: model.SchemaVersion,
@@ -114,9 +169,20 @@ func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer,
 			AnalysisLimits:          model.AnalysisLimits{CrossFileHelperCalls: result.CrossFileHelperCalls},
 		},
 	}
-	scan.ApplyPolicy(model.Policy{FailOn: model.Severity(cfg.FailOn), VerifiedOnly: cfg.VerifiedOnly, Strict: cfg.Strict})
+	token := ""
+	if orchestrator != nil {
+		scan.Target.Mode = "verify"
+		scan.Target.Image = &model.Image{Ref: cfg.Image, ImageID: orchestrator.Info.ImageID()}
+		scan.Tool.RuntimeBackend = "podman"
+		scan.Tool.RuntimeVersion = &orchestrator.Info.Version
+		token, err = orchestrator.Run(ctx, cfg, &scan, eval.Hypotheses)
+		if err != nil {
+			return auditOutput{}, err
+		}
+	}
+	scan.ApplyPolicy(model.Policy{FailOn: model.Severity(cfg.FailOn), VerifiedOnly: cfg.VerifiedOnly, Strict: cfg.Strict, Verify: cfg.Verify})
 	out := auditOutput{code: scan.Summary.AnalysisExitCode}
-	out.terminal, err = report.RenderTerminal(&scan, "", noColor)
+	out.terminal, err = report.RenderTerminal(&scan, token, noColor)
 	if err != nil {
 		return auditOutput{}, err
 	}
@@ -133,7 +199,7 @@ func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer,
 		if format.path == "" {
 			continue
 		}
-		data, err := format.render(&scan, "")
+		data, err := format.render(&scan, token)
 		if err != nil {
 			return auditOutput{}, fmt.Errorf("render %s report: %w", format.name, err)
 		}

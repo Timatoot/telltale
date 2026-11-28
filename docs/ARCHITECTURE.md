@@ -62,7 +62,7 @@ Top-level object fields:
 * **`coverage`** (`object`):
   * `files_scanned` (int)
   * `files_skipped` (array of `path`/`reason`; reason ∈ `symlink` | `non_regular` | `size_cap` | `count_cap` | `total_cap` | `engine_skipped`)
-  * `parse_errors` (array of `path`/`engine`/`reason`). A scan-wide Opengrep diagnostic uses an empty `path`.
+  * `parse_errors` (array of `path`/`engine`/`reason`). A scan-wide Opengrep diagnostic uses an empty `path`. Failed runtime inventory uses an empty `path`, `engine: "mcp"`, and the dynamic failure reason, including when the static report has no findings.
   * `tools_discovered` (int)
   * `unresolved_registrations` (array of `path`/`line`/`reason`)
   * `unresolved_descriptions` (array of `tool_id`/`field`)
@@ -179,6 +179,8 @@ Top-level object fields:
   * A per-run canary dir (`0500`; one `0400` file named `<file-id>` containing the content token) is mounted as `/restricted:ro,Z`.
   * SELinux `:Z` relabeling applies strictly to these fresh per-run temp directories created by `telltale`, never to the user's repository or shared host directories.
 * **Host-side reads:** `/workspace` snapshotting and watchdog sampling use `os.Root` and non-following `Lstat`, so symlinks written by a hostile container cannot redirect host reads outside the temp directory.
+* Before verify preflight, a same-binary guard starts in its own session with no parent-death signal. It owns the random run ID and private temp parent, and reports readiness over a private pipe. Opengrep preflight assets, rules, snapshots and fixtures share that parent. Only the audit process holds the liveness pipe's write end.
+* After successful Podman preflight the owner arms container cleanup. On owner death the guard allows 31 seconds for an in-flight Podman operation to settle, covering its 30-second command timeout and one-second wait delay. It then reconciles the exact run label, including created containers, with up to three bounded cleanup attempts. Host directories are removed only after successful container removal. Orderly completion waits up to 70 seconds for the guard to exit. Permission repair stays inside the run root and directory walking never follows symlinks.
 * **Cleanup:** runs under `context.WithoutCancel` with a bounded teardown timeout (10s). It force-removes containers labeled with this run's `run-id` only (concurrent `telltale` runs are never touched) and removes temp directories on completion, timeout, or signal. A second `SIGINT`/`SIGTERM` skips waiting for the session but still runs bounded teardown.
 
 #### MCP stdio Wire Boundary
@@ -211,7 +213,7 @@ Top-level object fields:
 **Sessions:**
 * **Inventory session:** one container, handshake, full `tools/list`, teardown.
 * **Hypothesis sessions:** one fresh container and one fresh seeded `/workspace` per hypothesis. A tool with several hypotheses (e.g., CONTRACT + FS) gets separate sessions. FS payloads for one hypothesis may share that session.
-* Sessions run sequentially, with `--timeout` per session and `--verify-budget` for the whole run.
+* Sessions run sequentially, with `--timeout` per session and `--verify-budget` starting at inventory collection after static analysis. Cleanup runs outside cancellation and budget deadlines. Remaining hypotheses become `skipped` with `budget_exhausted` when the global budget expires.
 
 **Argument synthesis (from the live `inputSchema`):**
 * Only required properties are filled.

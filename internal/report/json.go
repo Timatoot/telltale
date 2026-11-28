@@ -180,8 +180,8 @@ func (p *presentation) coverage(c model.Coverage, mode string) model.Coverage {
 		return v
 	})
 	c.ParseErrors = project(c.ParseErrors, func(v model.ParseError) model.ParseError {
-		// Opengrep can report an error for the entire scan.
-		if v.Path != "" || v.Engine != string(model.SourceOpengrep) {
+		// Opengrep and verify-mode MCP inventory errors can cover the entire scan.
+		if v.Path != "" || (v.Engine != string(model.SourceOpengrep) && (v.Engine != "mcp" || mode != "verify")) {
 			v.Path = p.path(v.Path)
 		}
 		v.Engine = p.ident(v.Engine)

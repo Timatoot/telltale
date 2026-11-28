@@ -601,14 +601,16 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
 
 - **Depends on:** Slice 9, Slice 13, Slice 14, Slice 15
 - **Parallelizable with:** Slice 19 once Slice 10 is complete
-- **Target files (6 total — 2 Modify, 4 Create):**
+- **Target files (7 total — 3 Modify, 4 Create):**
   - `[CREATE]` `cmd/telltale/cleanup_guard.go` and `cmd/telltale/cleanup_guard_test.go`
   - `[CREATE]` `internal/verify/orchestrator.go`
   - `[CREATE]` `internal/verify/orchestrator_test.go`
   - `[MODIFY]` `cmd/telltale/main.go`
   - `[MODIFY]` `cmd/telltale/main_test.go`
+  - `[MODIFY]` `internal/report/json.go` (approved scan-wide MCP coverage diagnostic)
 - **Tasks:**
-  1. [ ] Before allocating verify-run resources, start a private same-binary cleanup process outside the audit process group, with a private liveness pipe and no parent-death signal. The guard owns the unique run ID and private temp parent, and acknowledges readiness before preflight. Pass that parent to preflight, snapshot, rules and fixture allocation. No subprocess inherits the audit end of the pipe.
+  1. [x] Before allocating verify-run resources, start a private same-binary cleanup process outside the audit process group, with a private liveness pipe and no parent-death signal. The guard owns the unique run ID and private temp parent, and acknowledges readiness before preflight. Pass that parent to preflight, snapshot, rules and fixture allocation. No subprocess inherits the audit end of the pipe.
+     - [x] Start the same-binary guard in its own session and receive the guard-generated run ID and private temp parent before Podman preflight. Wait for guard exit on orderly teardown.
      - On owner death, allow in-flight runtime operations to settle and reconcile by exact run label under a bounded deadline, including containers created but never started. Remove only that run’s temp tree after container removal. On orderly exit, wait for guard acknowledgement. Use bounded cleanup on normal errors and signals as well. Test death before readiness, during create and after start, plus concurrent runs.
      - Implement `internal/verify/orchestrator.go`:
      - Runs 1 inventory container session → `Reconcile` → sequential per-hypothesis fresh container + fresh seeded `/workspace` sessions (a tool with CONTRACT + FS gets separate sessions; FS payloads for one hypothesis share its session).
@@ -616,9 +618,12 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
      - Marks non-verifiable findings (`CONTRACT-OPENWORLD-NETWORK`) `not_applicable`; marks absent-from-live-inventory hypotheses `skipped`/`tool_not_live`.
      - Guarantees every verifiable finding transitions `dynamic_status` from `not_run` to a terminal state **exactly once** and never alters `static_status` or downgrades policy gating.
      - Treats target misbehavior as `inconclusive`/`skipped`, never fatal exit `2`; runs `ForceCleanup(context.WithoutCancel(ctx), runID)` + `FixtureManager.Cleanup()` unconditionally.
-  2. [ ] **[RISK-06 & RISK-13 Test]** Write `internal/verify/orchestrator_test.go` with a fake `ContainerRuntime` testing: exact once-only state transitions, `not_applicable` vs `tool_not_live` vs `budget_exhausted`, target crash never returning fatal exit `2`, policy gate invariance across `not_reproduced`/`inconclusive`/`skipped`, and unconditional cleanup on cancellation.
-  3. [ ] Wire `--verify` into `cmd/telltale/main.go`: run Podman `Preflight` before static analysis (fail fast → exit `2`), set `tool.runtime_backend="podman"`, `tool.runtime_version`, `target.mode="verify"`, `target.image`, register `SIGINT`/`SIGTERM` handler (first signal cancels run context; second signal aborts session wait while still running bounded `context.WithoutCancel` teardown), and pass active canary token to the reporting layer's redaction guard.
-  4. [ ] **[RISK-13 Test]** Extend `cmd/telltale/main_test.go` using only one high, suspected FS finding and no workspace claim. Assert skipped/no_workspace_claim in both runs: `--strict --verify --verified-only` exits 3 and `--strict --verify --fail-on high` exits 1. Cover precedence `2 > 1 > 3 > 0`, and signal-cancellation cleanup.
+     - [x] Hermetic guard tests cover owner death before readiness, delayed synthetic create, a started synthetic container, concurrent run isolation, permission repair, and removal failures. Real Podman integration remains in Slice 17.
+  2. [x] **[RISK-06 & RISK-13 Test]** Write `internal/verify/orchestrator_test.go` with a fake `ContainerRuntime` testing: exact once-only state transitions, `not_applicable` vs `tool_not_live` vs `budget_exhausted`, target crash never returning fatal exit `2`, policy gate invariance across `not_reproduced`/`inconclusive`/`skipped`, and unconditional cleanup on cancellation.
+  3. [x] Wire `--verify` into `cmd/telltale/main.go`: run Podman `Preflight` before static analysis (fail fast → exit `2`), set `tool.runtime_backend="podman"`, `tool.runtime_version`, `target.mode="verify"`, `target.image`, register `SIGINT`/`SIGTERM` handler (first signal cancels run context; second signal aborts session wait while still running bounded `context.WithoutCancel` teardown), and pass active canary token to the reporting layer's redaction guard.
+     - [x] Run Podman preflight before static analysis. Cancel preflight on SIGINT or SIGTERM and wait for private-directory cleanup before returning exit 2.
+     - [x] Record failed MCP inventory as a scan-wide coverage diagnostic, including empty static reports, and synchronize SPEC/ARCHITECTURE.
+  4. [x] **[RISK-13 Test]** Extend `cmd/telltale/main_test.go` using only one high, suspected FS finding and no workspace claim. Assert skipped/no_workspace_claim in both runs: `--strict --verify --verified-only` exits 3 and `--strict --verify --fail-on high` exits 1. Cover precedence `2 > 1 > 3 > 0`, and signal-cancellation cleanup.
 - **CLI Verification:**
   ```bash
   CGO_ENABLED=1 go build -o bin/telltale ./cmd/telltale && go test -race -count=1 ./... && golangci-lint run ./...
