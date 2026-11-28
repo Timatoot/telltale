@@ -415,8 +415,8 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[CREATE]` `testdata/fixtures/fs_benign/server.py`
   - `[CREATE]` `cmd/telltale/static_e2e_test.go`
 - **Tasks:**
-  1. [ ] Author positive and negative Python MCP server fixtures for all three v1 families (`poison_vuln`, `poison_benign`, `contract_vuln`, `contract_benign`, `fs_vuln` including a `# nosemgrep` bypass attempt, `fs_benign` using canonical path confinement).
-  2. [ ] **[RISK-12 & RISK-13 Test]** Write `cmd/telltale/static_e2e_test.go` with build tag `staticacceptance`, named `TestStaticE2E`, executing the full `telltale audit` flow against every fixture and asserting:
+  1. [x] Author positive and negative Python MCP server fixtures for all three v1 families (`poison_vuln`, `poison_benign`, `contract_vuln`, `contract_benign`, `fs_vuln` including a `# nosemgrep` bypass attempt, `fs_benign` using canonical path confinement).
+  2. [x] **[RISK-12 & RISK-13 Test]** Write `cmd/telltale/static_e2e_test.go` with build tag `staticacceptance`, named `TestStaticE2E`, executing the full `telltale audit` flow against every fixture and asserting:
      - All 3 vulnerable fixtures detect the expected rule IDs and statuses (`proven` for bidi/invisible Unicode, `suspected` for heuristics/contracts/FS).
      - All 3 benign controls produce **zero findings** (zero false positives) and exit `0`.
      - Coverage fixture (`testdata/fixtures/coverage/`) reports unresolved registrations, unresolved descriptions, and cross-file helpers accurately. With no gating findings, `--strict` exits 3. A second fixture containing only the helper limitation retains complete coverage and exits 0 under `--strict`.
