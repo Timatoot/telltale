@@ -568,26 +568,28 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
 
 - **Depends on:** Slice 11, Slice 13, Slice 14
 - **Parallelizable with:** None
-- **Target files (4 total — 0 Modify, 4 Create):**
+- **Target files (6 total — 0 Modify, 6 Create):**
   - `[CREATE]` `internal/verify/contract.go`
   - `[CREATE]` `internal/verify/fs.go`
   - `[CREATE]` `internal/verify/contract_test.go`
   - `[CREATE]` `internal/verify/fs_test.go`
+  - `[CREATE]` `testdata/fixtures/fs_vuln/oracle_response.json`
+  - `[CREATE]` `testdata/fixtures/fs_benign/oracle_response.json`
 - **Tasks:**
-  1. [ ] Implement `internal/verify/contract.go` (`ContractVerifier`):
+  1. [x] Implement `internal/verify/contract.go` (`ContractVerifier`):
      - Handshake → snapshot `S0` → wait 500ms (configurable in tests) → snapshot `S1`; if `S0 != S1`, return `inconclusive` (`noisy_workspace`).
      - With the session watchdog already active, synthesize args, send one `tools/call`, wait 1s settle window, take `S2`, diff `S1 → S2`.
      - `readOnlyHint=true`: any add/remove/change → `confirmed`.
      - `destructiveHint=false`: removal or content/type change of any seeded fixture → `confirmed`; additive-only writes → `not_reproduced`.
      - No diff after clean call → `not_reproduced`; JSON-RPC error or `isError: true` with no diff → `inconclusive` (`tool_error`); watchdog/timeout/crash/protocol error → `inconclusive` with exact reason enum.
-  2. [ ] Implement `internal/verify/fs.go` (`FSVerifier`):
+  2. [x] Implement `internal/verify/fs.go` (`FSVerifier`):
      - If `!cfg.HasWorkspaceClaim`, immediately return `skipped` (`no_workspace_claim`).
      - Define fixed list of ≤16 bounded traversal payloads referencing **only `<file-id>`** (relative `../` depths 1–8, `/restricted/<file-id>`, `/workspace/../restricted/<file-id>`).
      - Precompute canary token variants: raw token, standard & URL-safe base64 at all 3 byte alignments, lower & upper hex.
      - Scan raw response frame bytes, each `content[].text`, concatenated text across content items, base64-decoded `content[].data` & `resource.blob` (≤2 MiB decoded cap), and serialized `structuredContent`.
      - Match in any response (including error responses) → `confirmed` recording payload, matched variant, content path, and boundary claim `run_cmd_workspace_placeholder` (never the token). All clean untruncated misses → `not_reproduced`; truncated/error/crash/timeout → `inconclusive` with most specific reason.
-  3. [ ] **[RISK-09 Test]** Write `internal/verify/contract_test.go` (hermetic mock `StdioSession` + temp `/workspace`) testing: `readOnlyHint` mutation (`confirmed`), `destructiveHint` delete/overwrite (`confirmed`) vs additive-only (`not_reproduced`), atime/mtime-only (`not_reproduced`), background writer (`noisy_workspace`), `isError` with no diff (`tool_error`), watchdog trigger (`resource_limit`), and server crash (`inconclusive`/`server_crash`).
-  4. [ ] **[RISK-10 Test]** Write `internal/verify/fs_test.go` covering every item in `docs/ARCHITECTURE.md` §5 Row 6: canary in plain text, base64 `data` (all 3 alignments), `resource.blob`, `structuredContent`, hex lower/upper, split across content items, in error response, truncated response (`inconclusive`), `isError` without canary (`inconclusive`), missing `{workspace}` (`skipped`/`no_workspace_claim`), and explicit assertion that the content token never appears in any outgoing payload or returned `EvidenceItem`.
+  3. [x] **[RISK-09 Test]** Write `internal/verify/contract_test.go` (hermetic mock `StdioSession` + temp `/workspace`) testing: `readOnlyHint` mutation (`confirmed`), `destructiveHint` delete/overwrite (`confirmed`) vs additive-only (`not_reproduced`), atime/mtime-only (`not_reproduced`), background writer (`noisy_workspace`), `isError` with no diff (`tool_error`), watchdog trigger (`resource_limit`), and server crash (`inconclusive`/`server_crash`).
+  4. [x] **[RISK-10 Test]** Write `internal/verify/fs_test.go` covering every item in `docs/ARCHITECTURE.md` §5 Row 6: canary in plain text, base64 `data` (all 3 alignments), `resource.blob`, `structuredContent`, hex lower/upper, split across content items, in error response, truncated response (`inconclusive`), `isError` without canary (`inconclusive`), missing `{workspace}` (`skipped`/`no_workspace_claim`), and explicit assertion that the content token never appears in any outgoing payload or returned `EvidenceItem`.
 - **CLI Verification:**
   ```bash
   go test -race -count=1 ./internal/verify/... && golangci-lint run ./...
