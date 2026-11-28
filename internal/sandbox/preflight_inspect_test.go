@@ -22,6 +22,9 @@ func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) != "podman" {
 		os.Exit(m.Run())
 	}
+	if os.Getenv("XDG_CONFIG_HOME") == os.Getenv("PATH") {
+		os.Exit(fakeSessionCLI(os.Getenv("XDG_CONFIG_HOME"), os.Args[1:]))
+	}
 	var output string
 	args := os.Args[1:]
 	switch {
