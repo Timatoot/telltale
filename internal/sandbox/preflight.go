@@ -30,6 +30,9 @@ type RuntimeInfo struct {
 	imageArgv []string
 }
 
+// ImageID returns the full 64-hex-character local image digest pinned at preflight.
+func (r RuntimeInfo) ImageID() string { return r.imageID }
+
 func (r ContainerRuntime) Preflight(ctx context.Context) (RuntimeInfo, error) {
 	return r.preflight(ctx, podmanOutput)
 }

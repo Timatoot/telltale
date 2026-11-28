@@ -163,7 +163,7 @@ func TestSnapshotChanges(t *testing.T) {
 	}
 	after := takeSnapshot(t, dir)
 	d := before.Diff(after)
-	if !slices.Equal(d.Added, []string{"fifo", "hard", "link"}) || !slices.Equal(d.Removed, []string{"removed"}) || !slices.Contains(d.Changed, "a") || !slices.Contains(d.Changed, "to-dir") {
+	if !slices.Equal(d.Added, []string{"fifo", "hard", "link"}) || !slices.Equal(d.Removed, []string{"removed"}) || !slices.Equal(d.Changed, []string{"a", "to-dir"}) {
 		t.Fatal(d)
 	}
 	if after["a"].Links != 2 || after["a"] != after["hard"] || !after["to-dir"].Mode.IsDir() || after["fifo"].Mode&fs.ModeNamedPipe == 0 {
@@ -310,5 +310,29 @@ func requireWalkLimit(t *testing.T, dir string) {
 	}
 	if err := new(workspaceWalk).observe(t.Context(), dir); !errors.Is(err, ErrResourceLimit) {
 		t.Fatal("expected watchdog limit")
+	}
+}
+
+func TestSnapshotAdditiveOnlyWrite(t *testing.T) {
+	manager, err := NewFixtureManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := manager.Cleanup(); err != nil {
+			t.Error(err)
+		}
+	})
+	mounts, err := manager.NewWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := takeSnapshot(t, mounts.Workspace())
+	writeFixture(t, filepath.Join(mounts.Workspace(), "top.txt"), "added")
+	writeFixture(t, filepath.Join(mounts.Workspace(), "seed", "extra.txt"), "added")
+	d := baseline.Diff(takeSnapshot(t, mounts.Workspace()))
+	if !slices.Equal(d.Added, []string{filepath.Join("seed", "extra.txt"), "top.txt"}) ||
+		len(d.Changed) != 0 || len(d.Removed) != 0 {
+		t.Fatalf("additive write reported spurious changes or removals: %+v", d)
 	}
 }

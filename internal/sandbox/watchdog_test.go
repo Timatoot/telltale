@@ -142,3 +142,35 @@ func TestWatchdogJoin(t *testing.T) {
 	case <-time.After(2 * watchInterval):
 	}
 }
+
+func TestWatchdogPersistentInaccessibleWorkspace(t *testing.T) {
+	spec, dir := sessionFixture(t)
+	s, err := (ContainerRuntime{}).CreateSession(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := s.start(t.Context(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	if err := stream.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	seed := filepath.Join(spec.workspace, "seed")
+	if err := os.Chmod(seed, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case <-stream.done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("session not terminated by persistent inaccessible workspace")
+	}
+	if err := stream.Close(); !errors.Is(err, ErrUnstableWorkspace) {
+		t.Fatalf("expected ErrUnstableWorkspace, got %v", err)
+	}
+	if !strings.Contains(commands(t, dir), "rm --force") {
+		t.Fatal("container survived inaccessible workspace watchdog")
+	}
+}

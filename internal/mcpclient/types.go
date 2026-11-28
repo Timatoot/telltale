@@ -48,16 +48,19 @@ type listResult struct {
 	NextCursor *string         `json:"nextCursor"`
 }
 
+// ToolAnnotations mirrors optional MCP tool annotation hints from tools/list.
+type ToolAnnotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint"`
+	DestructiveHint *bool `json:"destructiveHint"`
+	OpenWorldHint   *bool `json:"openWorldHint"`
+}
+
 // LiveTool keeps the peer's schema intact for the inventory consumer.
 type LiveTool struct {
 	Name        string          `json:"name"`
 	Description *string         `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
-	Annotations struct {
-		ReadOnlyHint    *bool `json:"readOnlyHint"`
-		DestructiveHint *bool `json:"destructiveHint"`
-		OpenWorldHint   *bool `json:"openWorldHint"`
-	} `json:"annotations"`
+	Annotations ToolAnnotations `json:"annotations"`
 }
 
 type callParams struct {

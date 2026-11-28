@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,32 @@ import (
 )
 
 const cleanupTimeout = 10 * time.Second
+
+var (
+	errGraceStop = errors.New("session closing")
+	gracePeriod  = 2 * time.Second
+	exitGrace    = 250 * time.Millisecond
+)
+
+func wrapTimeout(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, mcpclient.ErrTimeout) {
+		return errors.Join(mcpclient.ErrTimeout, err)
+	}
+	return err
+}
+
+func exitedWithin(ctx context.Context, exited <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-exited:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
+}
 
 // SessionFixtures carries the two bind sources allocated by FixtureManager.
 // Callers cannot supply arbitrary paths for Podman's private SELinux relabel.
@@ -112,11 +139,13 @@ func (s *StdioSession) Context() context.Context { return s.lifetime }
 func (s *StdioSession) Close() error {
 	s.closing.Store(true)
 	_ = s.stdin.Close()
+	timer := time.NewTimer(gracePeriod)
 	select {
 	case <-s.exited:
-	case <-time.After(2 * time.Second):
-		s.stop(context.Canceled)
+	case <-timer.C:
+		s.stop(errGraceStop)
 	}
+	timer.Stop()
 	<-s.done
 	_ = s.Client.Close()
 	return s.err
@@ -186,8 +215,13 @@ func (s *Session) start(parent context.Context, cgroupRoot string) (*StdioSessio
 		<-stream.exited
 		watchErr := joinWatch()
 		cause := context.Cause(ctx)
-		if cause == nil && (waitErr != nil || !stream.closing.Load()) {
+		switch {
+		case errors.Is(cause, errGraceStop):
+			cause = nil
+		case cause == nil && !stream.closing.Load():
 			cause = errors.Join(mcpclient.ErrServerCrash, waitErr)
+		default:
+			cause = wrapTimeout(cause)
 		}
 		stream.err = errors.Join(cause, cleanupErr, watchErr)
 		stop(cause)
@@ -209,7 +243,7 @@ func (s *Session) checkRunning(ctx context.Context, cgroupRoot string, exited <-
 	for {
 		data, err := podmanOutput(ctx, "container", "inspect", "--format", "{{json .State}}", "--", s.id)
 		if cause := context.Cause(ctx); cause != nil {
-			return cause
+			return wrapTimeout(cause)
 		}
 		select {
 		case <-exited:
@@ -218,18 +252,37 @@ func (s *Session) checkRunning(ctx context.Context, cgroupRoot string, exited <-
 		}
 		var state struct{ Status, CgroupPath string }
 		if err != nil || json.Unmarshal(data, &state) != nil {
+			if exitedWithin(ctx, exited, exitGrace) {
+				return mcpclient.ErrServerCrash
+			}
+			if cause := context.Cause(ctx); cause != nil {
+				return wrapTimeout(cause)
+			}
 			return &FatalError{errors.New("cannot inspect started container")}
 		}
 		switch state.Status {
 		case "running":
-			return checkCgroup(cgroupRoot, state.CgroupPath)
+			err := checkCgroup(cgroupRoot, state.CgroupPath)
+			if err == nil {
+				return nil
+			}
+			if errors.Is(err, fs.ErrNotExist) && exitedWithin(ctx, exited, exitGrace) {
+				return mcpclient.ErrServerCrash
+			}
+			if cause := context.Cause(ctx); cause != nil {
+				return wrapTimeout(cause)
+			}
+			return err
 		case "configured", "created", "initialized":
+			timer := time.NewTimer(20 * time.Millisecond)
 			select {
 			case <-ctx.Done():
-				return context.Cause(ctx)
+				timer.Stop()
+				return wrapTimeout(context.Cause(ctx))
 			case <-exited:
+				timer.Stop()
 				return mcpclient.ErrServerCrash
-			case <-time.After(20 * time.Millisecond):
+			case <-timer.C:
 			}
 		case "exited", "stopped", "removing":
 			return mcpclient.ErrServerCrash
@@ -262,7 +315,10 @@ func checkCgroup(base, path string) error {
 		}
 		data, err := io.ReadAll(io.LimitReader(f, 128))
 		_ = f.Close()
-		if err != nil || len(data) == 128 || strings.TrimSpace(string(data)) != limit.want {
+		if err != nil {
+			return &FatalError{fmt.Errorf("read %s: %w", limit.file, err)}
+		}
+		if len(data) == 128 || strings.TrimSpace(string(data)) != limit.want {
 			return &FatalError{fmt.Errorf("post-start %s mismatch", limit.file)}
 		}
 	}

@@ -105,6 +105,7 @@ type containerInspection struct {
 	Args                        []string
 	EffectiveCaps, BoundingCaps json.RawMessage
 	Mounts                      []bindMount
+	UseImageHosts               *bool
 	Config                      struct {
 		User                 string
 		Env, Entrypoint, Cmd []string
@@ -136,9 +137,9 @@ func (s createSpec) checkInspection(id string, data []byte) error {
 		return &FatalError{errors.New("unexpected container, image or runtime")}
 	case !h.AutoRemove || !c.Config.OpenStdin || h.LogConfig.Type != "none" || c.Config.Timeout != s.lifetimeSeconds() || c.Config.Labels["telltale.run"] != s.runID:
 		return &FatalError{errors.New("container lifecycle settings mismatch")}
-	case h.NetworkMode != "none" || !h.ReadonlyRootfs || h.Privileged == nil || *h.Privileged:
+	case h.NetworkMode != "none" || !h.ReadonlyRootfs || h.Privileged == nil || *h.Privileged || c.UseImageHosts == nil || !*c.UseImageHosts:
 		return &FatalError{errors.New("container isolation settings mismatch")}
-	case !emptyCaps(c.EffectiveCaps) || !emptyCaps(c.BoundingCaps) || !slices.Contains(h.SecurityOpt, "no-new-privileges"):
+	case !emptyCaps(c.EffectiveCaps) || !emptyCaps(c.BoundingCaps) || !securityOptAllowed(h.SecurityOpt):
 		return &FatalError{errors.New("container capability or privilege settings mismatch")}
 	case s.uid <= 0 || c.Config.User != s.user() || h.UsernsMode != "private" ||
 		!slices.Contains(h.IDMappings.UIDMap, strconv.Itoa(s.uid)+":0:1") ||
@@ -164,6 +165,26 @@ func emptyCaps(raw json.RawMessage) bool {
 	// field provides no evidence at all.
 	var caps []string
 	return len(raw) != 0 && json.Unmarshal(raw, &caps) == nil && len(caps) == 0
+}
+
+func securityOptAllowed(opts []string) bool {
+	hasNoNewPrivs := false
+	for _, opt := range opts {
+		switch opt {
+		case "no-new-privileges":
+			hasNoNewPrivs = true
+		case "label=disable", "label:disable",
+			"seccomp=unconfined", "seccomp:unconfined",
+			"apparmor=unconfined", "apparmor:unconfined",
+			"no-new-privileges=false", "no-new-privileges:false":
+			return false
+		default:
+			if strings.HasPrefix(opt, "unmask=") || strings.HasPrefix(opt, "unmask:") {
+				return false
+			}
+		}
+	}
+	return hasNoNewPrivs
 }
 
 func (s createSpec) bindsMatch(mounts []bindMount) bool {

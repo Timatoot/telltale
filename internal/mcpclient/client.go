@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"github.com/Timatoot/telltale/internal/config"
@@ -51,10 +52,12 @@ type Client struct {
 	pendingID   string
 	pending     chan reply
 
-	workers  sync.WaitGroup
-	closeErr error // Published by workers.Wait.
-	changed  atomic.Bool
-	stderr   stderrRing
+	workers   sync.WaitGroup
+	closeOnce sync.Once
+	closing   chan struct{}
+	closeErr  error // Published by workers.Wait.
+	changed   atomic.Bool
+	stderr    stderrRing
 }
 
 // New takes ownership of the pipes. Their Close methods must interrupt pending
@@ -65,20 +68,42 @@ func New(session context.Context, stdin io.WriteCloser, stdout, stderr io.ReadCl
 		session, release = context.WithTimeout(session, config.DefaultTimeout)
 	}
 	ctx, stop := context.WithCancelCause(session)
-	c := &Client{ctx: ctx, stop: stop, stdin: stdin, gate: make(chan struct{}, 1)}
+	c := &Client{ctx: ctx, stop: stop, stdin: stdin, gate: make(chan struct{}, 1), closing: make(chan struct{})}
+	readDone := make(chan struct{})
+	stderrDone := make(chan struct{})
 	c.workers.Go(func() {
 		<-ctx.Done()
-		c.closeErr = errors.Join(stdin.Close(), stdout.Close(), stderr.Close())
+		stdinErr := stdin.Close()
+		if errors.Is(context.Cause(ctx), ErrServerCrash) {
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-readDone:
+				select {
+				case <-stderrDone:
+				case <-c.closing:
+				case <-timer.C:
+				}
+			case <-c.closing:
+			case <-timer.C:
+			}
+			timer.Stop()
+		}
+		c.closeErr = errors.Join(stdinErr, stdout.Close(), stderr.Close())
 		release()
 	})
 	c.workers.Go(func() {
+		defer close(stderrDone)
 		_, _ = io.Copy(&c.stderr, stderr)
 	})
-	c.workers.Go(func() { c.stop(c.readLoop(stdout)) })
+	c.workers.Go(func() {
+		defer close(readDone)
+		c.stop(c.readLoop(stdout))
+	})
 	return c
 }
 
 func (c *Client) Close() error {
+	c.closeOnce.Do(func() { close(c.closing) })
 	c.stop(io.ErrClosedPipe)
 	c.workers.Wait()
 	return c.closeErr

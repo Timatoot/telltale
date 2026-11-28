@@ -113,7 +113,7 @@ func (w *workspaceWalk) walk(ctx context.Context, root *os.Root, rel string, dep
 		return err
 	}
 	if w.snapshot != nil {
-		w.snapshot[rel] = FileEntry{Mode: before.Mode(), Size: before.Size()}
+		w.snapshot[rel] = FileEntry{Mode: before.Mode()}
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -253,6 +253,8 @@ func hashFile(fdPath string, size int64) ([sha256.Size]byte, bool, error) {
 	return sum, partial, nil
 }
 
+const maxWatchUnstable = 3
+
 // armWatchdog schedules the first sample before the attach process starts.
 // Its independent context keeps sampling during graceful and forced teardown.
 // The owner must stop and join it, including when cmd.Start fails.
@@ -264,20 +266,30 @@ func armWatchdog(session context.Context, workspace string, abort context.Cancel
 	go func() {
 		defer close(done)
 		defer ticker.Stop()
+		unstable := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				var w workspaceWalk
-				if err := w.observe(ctx, workspace); err != nil {
-					if ctx.Err() != nil {
-						return
-					}
-					outcome = err
-					abort(err)
+				err := w.observe(ctx, workspace)
+				if err == nil {
+					unstable = 0
+					continue
+				}
+				if ctx.Err() != nil {
 					return
 				}
+				if errors.Is(err, ErrUnstableWorkspace) {
+					unstable++
+					if unstable < maxWatchUnstable {
+						continue
+					}
+				}
+				outcome = err
+				abort(err)
+				return
 			}
 		}
 	}()

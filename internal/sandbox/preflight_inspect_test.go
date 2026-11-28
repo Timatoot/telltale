@@ -133,7 +133,7 @@ func fixturePreflight(t *testing.T, host, image string, failAt int) (RuntimeInfo
 func TestPreflight(t *testing.T) {
 	for _, version := range []string{"5.0", "5.0.0", "5.8.0", "10.0.1"} {
 		info, err := fixturePreflight(t, replace(t, hostJSON, "5.8.0", version), imageJSON, 0)
-		if err != nil || info.Version != version || info.imageID != imageID || info.imageEnv["PATH"] != "/app" ||
+		if err != nil || info.Version != version || info.ImageID() != imageID || info.imageEnv["PATH"] != "/app" ||
 			!slices.Equal(info.imageArgv, []string{"python3", "/app/server.py"}) {
 			t.Fatalf("failed to preflight version %q: %v", version, err)
 		}
@@ -171,7 +171,7 @@ const containerID = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdc
 // Podman reports user bind mounts in Mounts, tmpfs options in HostConfig.Tmpfs,
 // and keep-id mappings relative to its rootless parent namespace.
 const inspectJSON = `[{
-	"Id":"` + containerID + `","Image":"` + imageID + `","OCIRuntime":"crun",
+	"Id":"` + containerID + `","Image":"` + imageID + `","OCIRuntime":"crun","UseImageHosts":true,
 	"Path":"python3","Args":["/app/server.py"],"EffectiveCaps":[],"BoundingCaps":null,
 	"Mounts":[{"Type":"bind","Source":"/run-fixture/work","Destination":"/workspace","RW":true},
 	          {"Type":"bind","Source":"/run-fixture/private","Destination":"/restricted","RW":false}],
@@ -257,7 +257,14 @@ func TestInspection(t *testing.T) {
 		{"bounding capability", `"BoundingCaps":null`, `"BoundingCaps":["CAP_CHOWN"]`},
 		{"writable rootfs", `"ReadonlyRootfs":true`, `"ReadonlyRootfs":false`},
 		{"privileged", `"Privileged":false`, `"Privileged":true`},
+		{"use image hosts false", `"UseImageHosts":true`, `"UseImageHosts":false`},
+		{"use image hosts missing", `"UseImageHosts":true,`, ""},
 		{"no-new-privileges missing", `"no-new-privileges"`, ""},
+		{"label disable", `"no-new-privileges"`, `"no-new-privileges","label=disable"`},
+		{"seccomp unconfined", `"no-new-privileges"`, `"no-new-privileges","seccomp=unconfined"`},
+		{"apparmor unconfined", `"no-new-privileges"`, `"no-new-privileges","apparmor:unconfined"`},
+		{"unmask all", `"no-new-privileges"`, `"no-new-privileges","unmask=ALL"`},
+		{"no-new-privileges false", `"no-new-privileges"`, `"no-new-privileges","no-new-privileges=false"`},
 		{"argv mismatch", "/app/server.py", "/app/other.py"}, {"executable", "python3", "other"},
 		{"injected device", `"Devices":[]`, `"Devices":[{"PathOnHost":"/dev/mock"}]`},
 		{"missing devices", `"Devices":[],`, ""},

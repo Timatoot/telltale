@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -452,5 +453,89 @@ func TestStderrRedaction(t *testing.T) {
 	wantError(t, p.client.Close(), nil)
 	if got := p.client.StderrExcerpt("canary"); got != "password=[REDACTED]<U+001B> [REDACTED]" {
 		t.Errorf("sanitized stderr %q", got)
+	}
+}
+
+func TestToolAnnotationsNamedType(t *testing.T) {
+	ro := true
+	tool := LiveTool{
+		Name:        "read_file",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Annotations: ToolAnnotations{ReadOnlyHint: &ro},
+	}
+	if tool.Annotations.ReadOnlyHint == nil || !*tool.Annotations.ReadOnlyHint {
+		t.Fatal("expected named ToolAnnotations to preserve hint")
+	}
+}
+
+func TestCrashDrainsStderr(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	inR, inW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outR, outW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = inR.Close()
+		_ = outW.Close()
+		_ = errW.Close()
+	})
+	c := New(ctx, inW, outR, errR)
+	t.Cleanup(func() { _ = c.Close() })
+
+	peerDone := make(chan error, 1)
+	go func() {
+		sc := bufio.NewScanner(inR)
+		if !sc.Scan() {
+			peerDone <- sc.Err()
+			return
+		}
+		var initReq envelope
+		if err := json.Unmarshal(sc.Bytes(), &initReq); err != nil {
+			peerDone <- err
+			return
+		}
+		if _, err := fmt.Fprintf(outW, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25"}}`+"\n", initReq.ID); err != nil {
+			peerDone <- err
+			return
+		}
+		if !sc.Scan() { // notifications/initialized
+			peerDone <- sc.Err()
+			return
+		}
+		if !sc.Scan() { // tools/call
+			peerDone <- sc.Err()
+			return
+		}
+		const crashMsg = "PermissionError: [Errno 13] Permission denied: '/app/.cache'\n"
+		if _, err := io.WriteString(errW, crashMsg); err != nil {
+			peerDone <- err
+			return
+		}
+		// Close stdout before stderr to mirror a process exiting while stderr flushes.
+		_ = outW.Close()
+		time.Sleep(15 * time.Millisecond)
+		_ = errW.Close()
+		peerDone <- nil
+	}()
+
+	if err := c.Initialize(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.CallTool(t.Context(), "probe", nil)
+	wantError(t, err, ErrServerCrash)
+	if err := <-peerDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := c.StderrExcerpt(""); !strings.Contains(got, "PermissionError: [Errno 13] Permission denied: '/app/.cache'") {
+		t.Fatalf("lost crash stderr output: %q", got)
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Timatoot/telltale/internal/mcpclient"
 )
 
 // TestMain re-execs this binary as podman. The private directory models
@@ -55,8 +57,15 @@ func fakeSessionCLI(dir string, args []string) int {
 	case slices.Equal(args, []string{"container", "inspect", "--", containerID}):
 		return emit("inspection")
 	case slices.Equal(args, []string{"container", "inspect", "--format", "{{json .State}}", "--", containerID}):
+		if _, err := root.Stat("fail-state-inspect"); err == nil {
+			return 2
+		}
 		return emit("state")
 	case slices.Equal(args, []string{"start", "--attach", "--interactive", "--", containerID}):
+		if _, err := root.Stat("fast-crash"); err == nil {
+			time.Sleep(30 * time.Millisecond)
+			return 1
+		}
 		fmt.Fprint(os.Stderr, strings.Repeat(".", 65540)+"tail")
 		sc := bufio.NewScanner(os.Stdin)
 		for sc.Scan() {
@@ -74,6 +83,12 @@ func fakeSessionCLI(dir string, args []string) int {
 			if msg.Method == "initialize" && os.IsNotExist(hold) {
 				fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"protocolVersion\":\"2025-11-25\"}}\n", msg.ID)
 			}
+		}
+		if _, err := root.Stat("ignore-eof"); err == nil {
+			time.Sleep(10 * time.Second)
+		}
+		if _, err := root.Stat("exit-nonzero-on-eof"); err == nil {
+			return 1
 		}
 	case slices.Equal(args, []string{"ps", "--all", "--no-trunc", "--filter", "label=telltale.run=run-1", "--format", "{{.ID}}"}):
 		for _, id := range []string{containerID, imageID} {
@@ -110,7 +125,13 @@ func fakeSessionCLI(dir string, args []string) int {
 
 func writeFixture(t *testing.T, path, data string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = root.WriteFile(filepath.Base(path), []byte(data), 0o600)
+	_ = root.Close()
+	if err != nil {
 		t.Fatal(err)
 	}
 }
@@ -247,4 +268,128 @@ func TestForceCleanup(t *testing.T) {
 	if lines := commands(t, dir); lines != "ps --all --no-trunc --filter label=telltale.run=run-1 --format {{.ID}}\nrm --force --time 0 --ignore -- "+containerID+"\n" {
 		t.Fatal(lines)
 	}
+}
+
+func TestStartFastCrashNotFatal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		prep func(*testing.T, string)
+	}{
+		{"inspect vanished", func(t *testing.T, dir string) {
+			writeFixture(t, filepath.Join(dir, "fail-state-inspect"), "")
+		}},
+		{"cgroup vanished", func(t *testing.T, dir string) {
+			if err := os.RemoveAll(filepath.Join(dir, "group")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spec, dir := sessionFixture(t)
+			writeFixture(t, filepath.Join(dir, "fast-crash"), "")
+			tc.prep(t, dir)
+			s, err := (ContainerRuntime{}).CreateSession(t.Context(), spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.start(t.Context(), dir)
+			if !errors.Is(err, mcpclient.ErrServerCrash) {
+				t.Fatalf("expected ErrServerCrash, got %v", err)
+			}
+			var fatal *FatalError
+			if errors.As(err, &fatal) {
+				t.Fatalf("fast crash misclassified as fatal: %v", err)
+			}
+		})
+	}
+}
+
+func TestStartMissingCgroupWhileRunningIsFatal(t *testing.T) {
+	spec, dir := sessionFixture(t)
+	if err := os.RemoveAll(filepath.Join(dir, "group")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := (ContainerRuntime{}).CreateSession(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.start(t.Context(), dir)
+	requireFatal(t, err)
+}
+
+func TestStartTimeoutWrapped(t *testing.T) {
+	spec, dir := sessionFixture(t)
+	spec.timeout = 80 * time.Millisecond
+	raw, err := fixtureRoot(t, dir).ReadFile("inspection")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFixture(t, filepath.Join(dir, "inspection"), replace(t, string(raw), `"Timeout":41`, `"Timeout":11`))
+	writeFixture(t, filepath.Join(dir, "state"), `{"Status":"created"}`)
+	s, err := (ContainerRuntime{}).CreateSession(t.Context(), spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.start(t.Context(), dir)
+	if !errors.Is(err, mcpclient.ErrTimeout) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected ErrTimeout + DeadlineExceeded, got %v", err)
+	}
+}
+
+func TestCloseGraceAndPostEOFExit(t *testing.T) {
+	t.Run("ignore EOF", func(t *testing.T) {
+		orig := gracePeriod
+		gracePeriod = 100 * time.Millisecond
+		t.Cleanup(func() { gracePeriod = orig })
+
+		spec, dir := sessionFixture(t)
+		writeFixture(t, filepath.Join(dir, "ignore-eof"), "")
+		s, err := (ContainerRuntime{}).CreateSession(t.Context(), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := s.start(t.Context(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("expected clean close after grace stop, got %v", err)
+		}
+		if !strings.Contains(commands(t, dir), "rm --force --time 0 --ignore -- "+containerID) {
+			t.Fatal("expected forced container removal")
+		}
+	})
+
+	t.Run("exit nonzero on EOF", func(t *testing.T) {
+		spec, dir := sessionFixture(t)
+		writeFixture(t, filepath.Join(dir, "exit-nonzero-on-eof"), "")
+		s, err := (ContainerRuntime{}).CreateSession(t.Context(), spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := s.start(t.Context(), dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.Close(); err != nil {
+			t.Fatalf("expected clean close on post-EOF non-zero exit, got %v", err)
+		}
+	})
+
+	t.Run("parent canceled", func(t *testing.T) {
+		spec, dir := sessionFixture(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		s, err := (ContainerRuntime{}).CreateSession(ctx, spec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream, err := s.start(ctx, dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		if err := stream.Close(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("expected context.Canceled, got %v", err)
+		}
+	})
 }
