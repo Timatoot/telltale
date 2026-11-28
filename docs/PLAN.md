@@ -443,16 +443,16 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[CREATE]` `internal/mcpclient/client.go`
   - `[CREATE]` `internal/mcpclient/client_test.go`
 - **Tasks:**
-  1. [ ] Implement `internal/mcpclient/types.go` with JSON-RPC 2.0 envelopes, MCP `initialize`, `notifications/initialized`, `tools/list` (paginated), `tools/call` structs (preserving raw response bytes + `content[]` + `structuredContent` + `isError`), `LiveTool`, and typed sentinel errors (`ErrHandshakeFailed`, `ErrProtocolViolation`, `ErrResponseTruncated`, `ErrTimeout`, `ErrServerCrash`).
-  2. [ ] Implement `internal/mcpclient/client.go` over owned, closable session pipes (stdin/stdout; closing must interrupt pending reads and writes) + bounded 64 KiB stderr ring buffer:
-     - `Initialize(ctx)`: sends `capabilities: {}` (no `roots`, `sampling`, `elicitation`), validates supported `protocolVersion` (else `ErrHandshakeFailed`), sends `notifications/initialized`.
+  1. [x] Implement `internal/mcpclient/types.go` with JSON-RPC 2.0 envelopes, MCP `initialize`, `notifications/initialized`, `tools/list` (paginated), `tools/call` structs (preserving raw response bytes + `content[]` + `structuredContent` + `isError`), `LiveTool`, and typed sentinel errors (`ErrHandshakeFailed`, `ErrProtocolViolation`, `ErrResponseTruncated`, `ErrTimeout`, `ErrServerCrash`).
+  2. [x] Implement `internal/mcpclient/client.go` over owned, closable session pipes (stdin/stdout; closing must interrupt pending reads and writes) + bounded 64 KiB stderr ring buffer:
+     - `Initialize(ctx)`: sends `capabilities: {}` (no `roots`, `sampling`, `elicitation`), requires `protocolVersion: "2025-11-25"` (else `ErrHandshakeFailed`), sends `notifications/initialized`.
      - Bounded line reader: hard 2 MiB frame cap; oversize frame or 2 MiB with no newline immediately terminates session with `ErrResponseTruncated`.
      - Non-JSON stdout lines skipped and byte-counted up to 64 KiB budget, then `ErrProtocolViolation`.
      - Server→client JSON-RPC requests answered with JSON-RPC error `-32601`; `notifications/tools/list_changed` captured as `observed` evidence; other notifications ignored.
      - Unknown/duplicate response IDs discarded and counted; >16 discards → `ErrProtocolViolation`.
-     - `ListTools(ctx)`: stops at 50 pages or 1,000 tools; repeated pagination cursor → `ErrProtocolViolation`.
+     - `ListTools(ctx)`: accepts up to 50 pages and 1,000 tools. A repeated cursor, an overflow, or a continuation at either limit returns `ErrProtocolViolation` and discards the partial inventory.
      - Per-RPC deadlines bound by session context; clean stdin close on `Close()`.
-  3. [ ] **[RISK-07 Test]** Write `internal/mcpclient/client_test.go` using in-memory `io.Pipe` fake servers covering every case in `docs/ARCHITECTURE.md` §5 Row 4:
+  3. [x] **[RISK-07 Test]** Write `internal/mcpclient/client_test.go` using in-memory `io.Pipe` fake servers covering every case in `docs/ARCHITECTURE.md` §5 Row 4:
      - Server→client `roots/list` and `sampling/createMessage` requests answered `-32601`.
      - Stray `print()` lines under 64 KiB (succeeds) and over 64 KiB (`ErrProtocolViolation`).
      - 2 MiB frame without newline (`ErrResponseTruncated`).
