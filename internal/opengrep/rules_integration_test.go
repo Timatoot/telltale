@@ -5,8 +5,11 @@ package opengrep
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/Timatoot/telltale/internal/ingest"
 )
 
 func TestOpengrepIntegration(t *testing.T) {
@@ -49,4 +52,45 @@ func TestOpengrepIntegration(t *testing.T) {
 	if want := []string{"fs-read", "fs-write", "fs-overwrite", "fs-delete", "exec", "network"}; !slices.Equal(ids, want) {
 		t.Fatalf("matched rules in source order: %v, want %v", ids, want)
 	}
+
+	t.Run("symlinked RunDir", func(t *testing.T) {
+		realDir := t.TempDir()
+		linkDir := filepath.Join(t.TempDir(), "run-link")
+		if err := os.Symlink(realDir, linkDir); err != nil {
+			t.Fatal(err)
+		}
+		sa := SinkAnalyzer{RunDir: linkDir}
+		t.Cleanup(func() {
+			entries, err := os.ReadDir(realDir)
+			if err != nil || len(entries) != 0 {
+				t.Errorf("stage cleanup: %v, %v", entries, err)
+			}
+		})
+		if _, err := sa.Preflight(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		snap, err := ingest.CreateSnapshot(t.Context(), "../../testdata/fixtures/opengrep", linkDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := snap.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		res, err := sa.Analyze(t.Context(), snap)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.ParseErrors) != 0 || len(res.FilesSkipped) != 0 {
+			t.Fatalf("incomplete scan: errors %v, skipped %v", res.ParseErrors, res.FilesSkipped)
+		}
+		var symIDs []string
+		for _, m := range res.Matches {
+			symIDs = append(symIDs, m.RuleID)
+		}
+		if !slices.Equal(symIDs, ids) {
+			t.Fatalf("matched rules under symlinked RunDir: %v, want %v", symIDs, ids)
+		}
+	})
 }

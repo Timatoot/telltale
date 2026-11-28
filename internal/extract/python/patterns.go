@@ -62,18 +62,29 @@ func (f *sourceFile) function(fn *sitter.Node, env *scope) *functionDef {
 func (f *sourceFile) decorator(dec *sitter.Node, env *scope, loop bool) bool {
 	def := dec.Parent()
 	fn := def.ChildByFieldName("definition")
-	call := firstChild(dec)
-	if fn == nil || fn.Kind() != "function_definition" || call.Kind() != "call" {
+	expr := firstChild(dec)
+	if fn == nil || fn.Kind() != "function_definition" || expr == nil {
 		return true
 	}
-	attr := call.ChildByFieldName("function")
+	if expr.Kind() == "attribute" {
+		receiver := env.lookup(f.text(expr.ChildByFieldName("object")))
+		method := f.text(expr.ChildByFieldName("attribute"))
+		if method == "tool" && receiver.qualified == serverInstance {
+			return f.registerFunction(dec, def, f.function(fn, env), nil, env, loop)
+		}
+		return true
+	}
+	if expr.Kind() != "call" {
+		return true
+	}
+	attr := expr.ChildByFieldName("function")
 	if attr.Kind() != "attribute" {
 		return true
 	}
 	receiver := env.lookup(f.text(attr.ChildByFieldName("object")))
 	method := f.text(attr.ChildByFieldName("attribute"))
 	if method == "tool" && receiver.qualified == serverInstance {
-		return f.registerFunction(dec, def, f.function(fn, env), call.ChildByFieldName("arguments"), env, loop)
+		return f.registerFunction(dec, def, f.function(fn, env), expr.ChildByFieldName("arguments"), env, loop)
 	}
 	if receiver.low == nil {
 		return true
@@ -119,6 +130,9 @@ func (f *sourceFile) addTool(call *sitter.Node, env *scope, loop bool) bool {
 func (f *sourceFile) registrationName(site, args *sitter.Node) *sitter.Node {
 	if name := f.keyword(args, "name"); name != nil {
 		return name
+	}
+	if site.Kind() == "decorator" {
+		return keywordSplat(args)
 	}
 	// add_tool takes the callable first. A second positional argument or an
 	// unpacked argument can supply the public name.
@@ -305,6 +319,8 @@ func (f *sourceFile) schemaParameters(id string, schema *sitter.Node) []model.Pa
 		}
 		if spec.Kind() == "dictionary" {
 			p.Description, p.DescriptionResolved = f.description(id, "param:"+*name+".description", f.dictValue(spec, "description"))
+		} else {
+			f.gaps = append(f.gaps, model.UnresolvedDescription{ToolID: id, Field: "param:" + *name + ".description"})
 		}
 		params = append(params, p)
 	}

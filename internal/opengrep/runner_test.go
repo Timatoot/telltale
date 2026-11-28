@@ -146,6 +146,7 @@ func TestAnalysisFailures(t *testing.T) {
 		{"invalid JSON", `echo '{'`, "decode scan output"},
 		{"missing coverage", `echo '{"results":[],"errors":[]}'`, "paths.scanned"},
 		{"foreign path", `echo '{"results":[],"errors":[],"paths":{"scanned":["../read.py"]}}'`, "manifest"},
+		{"unexpected check_id", `echo '{"results":[{"check_id":"tmp.real.rules.fs-read","path":"read.py","start":{"line":1,"col":1},"end":{"line":1,"col":2}}],"paths":{"scanned":["read.py"]},"errors":[]}'`, "unexpected rule ID"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			a := analyzer(t)
@@ -180,5 +181,43 @@ func TestParseTaintSource(t *testing.T) {
 	result, err := a.Analyze(t.Context(), s)
 	if err != nil || len(result.Matches) != 1 || result.Matches[0].TaintedParameter != "source_name" {
 		t.Fatalf("taint binding: %+v, %v", result, err)
+	}
+}
+
+func TestSymlinkedRunDir(t *testing.T) {
+	realDir := t.TempDir()
+	linkDir := filepath.Join(t.TempDir(), "run-link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Fatal(err)
+	}
+	a := SinkAnalyzer{RunDir: linkDir}
+	t.Setenv("RUN_DIR", realDir)
+	t.Cleanup(func() {
+		entries, err := os.ReadDir(realDir)
+		if err != nil || len(entries) != 0 {
+			t.Errorf("stage cleanup: %v, %v", entries, err)
+		}
+	})
+	s, err := ingest.CreateSnapshot(t.Context(), "../../testdata/fixtures/opengrep", linkDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	fake(t, `if [ "$target" = "$PWD/fixture" ]; then
+    printf '{"results":[],"errors":[],"paths":{"scanned":["%s/selftest_fixture.py"]}}' "$target"
+    exit 0
+fi
+printf '{"results":[{"check_id":"rules.fs-read","path":"%s/read.py","start":{"line":14,"col":10},"end":{"line":14,"col":14}}],"paths":{"scanned":["read.py","benign.py"]},"errors":[]}' "$target"`)
+	version, err := a.Preflight(t.Context())
+	if err != nil || version != "2.0.0" {
+		t.Fatalf("preflight = %q, %v", version, err)
+	}
+	result, err := a.Analyze(t.Context(), s)
+	if err != nil || len(result.Matches) != 1 || result.Matches[0].RuleID != "fs-read" {
+		t.Fatalf("analyze = %+v, %v", result, err)
 	}
 }

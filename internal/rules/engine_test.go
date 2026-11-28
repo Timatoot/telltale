@@ -133,10 +133,22 @@ func TestPoisonFieldResolution(t *testing.T) {
 		{"name", "a\tb", "U+0009"}, {"description", "a\rb", "U+000D"},
 		{"description", "x\u202e\u200b\u202e", "U+200B U+202E"},
 		{"description", "IGNORE  prior Instructions", "ignore prior instructions"},
+		{"description", "a\ufe0f", "U+FE0F"},
+		{"description", "\ufe0f", "U+FE0F"},
+		{"description", "⚠️\ufe0f", "U+FE0F"},
+		{"description", "a\u200db", "U+200D"},
+		{"description", "a\U000e0100", "U+E0100"},
+		{"description", "a\u202eb", "U+202E"},
+		{"description", "a\u200bb", "U+200B"},
 	} {
 		got := EvalPoisonText(tc.field, tc.value)
 		if len(got) != 1 || got[0].MatchedContent != tc.anchor {
-			t.Fatal(got)
+			t.Fatalf("%q: got %+v, want %q", tc.value, got, tc.anchor)
+		}
+	}
+	for _, benign := range []string{"Search docs ⚠️", "Tools 🛠️", "Dev 👨‍💻", "Heart ❤️‍🔥"} {
+		if got := EvalPoisonText("description", benign); len(got) != 0 {
+			t.Fatalf("%q: unexpected poison finding %+v", benign, got)
 		}
 	}
 }
@@ -177,5 +189,38 @@ func TestDistinctHandlersWithSameFormattedID(t *testing.T) {
 	result := Evaluate(tools, []opengrep.SinkMatch{hit}, false)
 	if len(result.Findings) != 0 || len(result.Hypotheses) != 0 {
 		t.Fatalf("borrowed another registration's sink: %+v", result)
+	}
+}
+
+func TestIndependentFamilyOrdinals(t *testing.T) {
+	handlerLoc := model.Location{Path: "s.py", StartLine: 1, StartColumn: 1, EndLine: 5, EndColumn: 20}
+	writeCall := model.Location{Path: "s.py", StartLine: 2, StartColumn: 5, EndLine: 2, EndColumn: 19}
+	readCall := model.Location{Path: "s.py", StartLine: 3, StartColumn: 5, EndLine: 3, EndColumn: 15}
+	tools := []model.ToolFact{{
+		ToolID: "py:s.py:read", Name: "read", SourceLocation: &handlerLoc,
+		Annotations: model.Annotations{ReadOnlyHint: new(true)},
+	}}
+	fsMatch := opengrep.SinkMatch{
+		ToolID: "py:s.py:read", HandlerSpan: handlerLoc, RuleID: "fs-read",
+		TaintedParameter: "path", NormalizedCallee: "open", CallSpan: readCall, Span: readCall,
+	}
+	contractMatch := opengrep.SinkMatch{
+		ToolID: "py:s.py:read", HandlerSpan: handlerLoc, RuleID: "fs-write",
+		NormalizedCallee: "open", CallSpan: writeCall, Span: writeCall,
+	}
+	withoutWrite := Evaluate(tools, []opengrep.SinkMatch{fsMatch}, false)
+	withWrite := Evaluate(tools, []opengrep.SinkMatch{contractMatch, fsMatch}, false)
+	wantFP := model.FSFingerprint(traversal, "s.py", "read", "path", "open", 1)
+	if len(withoutWrite.Findings) != 1 || withoutWrite.Findings[0].Fingerprint != wantFP {
+		t.Fatalf("withoutWrite = %+v", withoutWrite.Findings)
+	}
+	var gotFSFP string
+	for _, f := range withWrite.Findings {
+		if f.ID == traversal {
+			gotFSFP = f.Fingerprint
+		}
+	}
+	if gotFSFP != wantFP {
+		t.Fatalf("FS fingerprint shifted from %s to %s when contract open was added", wantFP, gotFSFP)
 	}
 }

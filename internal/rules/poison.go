@@ -39,7 +39,12 @@ func EvalPoisonText(field, value string) []TextMatch {
 	if multiline {
 		value = strings.ReplaceAll(value, "\r\n", "\n")
 	}
-	for _, r := range value {
+	runes := []rune(value)
+	for i, r := range runes {
+		if (r == 0xFE0F && i > 0 && isEmojiBase(runes[i-1])) ||
+			(r == 0x200D && isEmojiJoiner(runes, i)) {
+			continue
+		}
 		if (unicode.IsControl(r) && (!multiline || r != '\n' && r != '\t')) ||
 			unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector) {
 			codes[r] = true
@@ -67,6 +72,21 @@ func EvalPoisonText(field, value string) []TextMatch {
 		}
 	}
 	return matches
+}
+
+func isEmojiBase(r rune) bool {
+	return r >= 0x2000 && unicode.Is(unicode.So, r)
+}
+
+func isEmojiJoinNeighbor(r rune) bool {
+	return r >= 0x2000 && (unicode.Is(unicode.So, r) || unicode.Is(unicode.Sk, r))
+}
+
+func isEmojiJoiner(runes []rune, i int) bool {
+	if i <= 0 || i+1 >= len(runes) || !isEmojiJoinNeighbor(runes[i+1]) {
+		return false
+	}
+	return isEmojiJoinNeighbor(runes[i-1]) || (runes[i-1] == 0xFE0F && i >= 2 && isEmojiBase(runes[i-2]))
 }
 
 func staticPoison(t model.ToolFact) []model.Finding {

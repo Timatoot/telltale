@@ -91,21 +91,26 @@ func Evaluate(tools []model.ToolFact, matches []opengrep.SinkMatch, verify bool)
 		r.Findings = append(r.Findings, staticPoison(*t)...)
 		hits := byTool[handler{t.ToolID, *t.SourceLocation}]
 		slices.SortFunc(hits, compareMatch)
-		ordinals := make(map[string]int)
-		var lastCall model.Location
+		fsOrdinals := make(map[string]int)
+		contractOrdinals := make(map[string]int)
+		var lastFSCall, lastContractCall model.Location
 		for _, m := range slices.Compact(hits) {
-			if m.CallSpan != lastCall {
-				ordinals[m.NormalizedCallee]++
-				lastCall = m.CallSpan
-			}
 			sink := model.Sink{RuleID: m.RuleID, Category: m.Category(), Span: m.Span, NormalizedCallee: m.NormalizedCallee}
 			if len(t.InferredSinks) == 0 || t.InferredSinks[len(t.InferredSinks)-1] != sink {
 				t.InferredSinks = append(t.InferredSinks, sink)
 			}
 			if m.RuleID == "fs-read" {
-				r.evalFS(*t, m, ordinals[m.NormalizedCallee])
+				if m.CallSpan != lastFSCall {
+					fsOrdinals[m.NormalizedCallee]++
+					lastFSCall = m.CallSpan
+				}
+				r.evalFS(*t, m, fsOrdinals[m.NormalizedCallee])
 			} else {
-				r.evalContract(*t, sink, ordinals[m.NormalizedCallee], verify)
+				if m.CallSpan != lastContractCall {
+					contractOrdinals[m.NormalizedCallee]++
+					lastContractCall = m.CallSpan
+				}
+				r.evalContract(*t, sink, contractOrdinals[m.NormalizedCallee], verify)
 			}
 		}
 	}

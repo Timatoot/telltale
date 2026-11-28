@@ -22,14 +22,14 @@ func (f *sourceFile) readHints(toolID string, args *sitter.Node, env *scope) mod
 			nested = annotation.ChildByFieldName("arguments")
 		}
 	}
-	opaque := keywordSplat(args) != nil || keywordSplat(nested) != nil || (annotation != nil && nested == nil)
+	opaque := keywordSplat(args) != nil || keywordSplat(nested) != nil || (annotation != nil && annotation.Kind() != "none" && nested == nil)
 	for i, key := range hintKeys {
 		value := f.keyword(args, key)
 		if value == nil {
 			value = f.keyword(nested, key)
 		}
 		if !opaque {
-			if value == nil {
+			if value == nil || value.Kind() == "none" {
 				continue
 			}
 			switch value.Kind() {

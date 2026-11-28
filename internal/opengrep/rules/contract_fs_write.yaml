@@ -11,6 +11,22 @@ rules:
               - pattern: pathlib.Path(...).$METHOD(...)
               - pattern: (pathlib.Path(...) / $NAME).$METHOD(...)
               - patterns:
+                  - pattern-either:
+                      - pattern: pathlib.Path(...).$CHAIN(...).$METHOD(...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).$METHOD(...)
+                      - patterns:
+                          - pattern: $OBJ.$METHOD(...)
+                          - pattern-either:
+                              - pattern-inside: |
+                                  $OBJ = pathlib.Path(...).$CHAIN(...)
+                                  ...
+                              - pattern-inside: |
+                                  $OBJ = (pathlib.Path(...) / $NAME).$CHAIN(...)
+                                  ...
+                  - metavariable-regex:
+                      metavariable: $CHAIN
+                      regex: ^(resolve|expanduser|absolute|joinpath|with_name|with_suffix|with_stem)$
+              - patterns:
                   - pattern: $OBJ.$METHOD(...)
                   - pattern-either:
                       - pattern-inside: |
@@ -32,12 +48,60 @@ rules:
       - pattern: shutil.copystat(...)
       - patterns:
           - pattern-either:
+              - pattern: os.open($PATH, <... os.O_CREAT ...>, ...)
+              - pattern: os.open($PATH, <... os.O_APPEND ...>, ...)
+              - pattern: os.open(..., flags=<... os.O_CREAT ...>, ...)
+              - pattern: os.open(..., flags=<... os.O_APPEND ...>, ...)
+          - pattern-not: os.open(..., <... os.O_WRONLY ...>, ...)
+          - pattern-not: os.open(..., <... os.O_RDWR ...>, ...)
+          - pattern-not: os.open(..., <... os.O_TRUNC ...>, ...)
+          - pattern-not: os.open(..., flags=<... os.O_WRONLY ...>, ...)
+          - pattern-not: os.open(..., flags=<... os.O_RDWR ...>, ...)
+          - pattern-not: os.open(..., flags=<... os.O_TRUNC ...>, ...)
+      - patterns:
+          - pattern-either:
               - pattern: open($PATH, $MODE, ...)
               - pattern: open(..., mode=$MODE, ...)
               - pattern: io.open($PATH, $MODE, ...)
               - pattern: io.open(..., mode=$MODE, ...)
               - pattern: pathlib.Path(...).open($MODE, ...)
               - pattern: pathlib.Path(...).open(..., mode=$MODE, ...)
+              - pattern: (pathlib.Path(...) / $NAME).open($MODE, ...)
+              - pattern: (pathlib.Path(...) / $NAME).open(..., mode=$MODE, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: pathlib.Path(...).$CHAIN(...).open($MODE, ...)
+                      - pattern: pathlib.Path(...).$CHAIN(...).open(..., mode=$MODE, ...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).open($MODE, ...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).open(..., mode=$MODE, ...)
+                      - patterns:
+                          - pattern-either:
+                              - pattern: $OBJ.open($MODE, ...)
+                              - pattern: $OBJ.open(..., mode=$MODE, ...)
+                          - pattern-either:
+                              - pattern-inside: |
+                                  $OBJ = pathlib.Path(...).$CHAIN(...)
+                                  ...
+                              - pattern-inside: |
+                                  $OBJ = (pathlib.Path(...) / $NAME).$CHAIN(...)
+                                  ...
+                  - metavariable-regex:
+                      metavariable: $CHAIN
+                      regex: ^(resolve|expanduser|absolute|joinpath|with_name|with_suffix|with_stem)$
+              - patterns:
+                  - pattern-either:
+                      - pattern: $OBJ.open($MODE, ...)
+                      - pattern: $OBJ.open(..., mode=$MODE, ...)
+                  - pattern-either:
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...)
+                          ...
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...) / $NAME
+                          ...
+                      - pattern-inside: |
+                          def $F(..., $OBJ: pathlib.Path, ...):
+                              ...
           - metavariable-regex:
               metavariable: $MODE
               regex: ^["'][abtx+]*[ax][abtx+]*["']$
@@ -52,6 +116,22 @@ rules:
           - pattern-either:
               - pattern: pathlib.Path(...).$METHOD(...)
               - pattern: (pathlib.Path(...) / $NAME).$METHOD(...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: pathlib.Path(...).$CHAIN(...).$METHOD(...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).$METHOD(...)
+                      - patterns:
+                          - pattern: $OBJ.$METHOD(...)
+                          - pattern-either:
+                              - pattern-inside: |
+                                  $OBJ = pathlib.Path(...).$CHAIN(...)
+                                  ...
+                              - pattern-inside: |
+                                  $OBJ = (pathlib.Path(...) / $NAME).$CHAIN(...)
+                                  ...
+                  - metavariable-regex:
+                      metavariable: $CHAIN
+                      regex: ^(resolve|expanduser|absolute|joinpath|with_name|with_suffix|with_stem)$
               - patterns:
                   - pattern: $OBJ.$METHOD(...)
                   - pattern-either:
@@ -83,6 +163,22 @@ rules:
               - pattern: pathlib.Path(...).$METHOD(...)
               - pattern: (pathlib.Path(...) / $NAME).$METHOD(...)
               - patterns:
+                  - pattern-either:
+                      - pattern: pathlib.Path(...).$CHAIN(...).$METHOD(...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).$METHOD(...)
+                      - patterns:
+                          - pattern: $OBJ.$METHOD(...)
+                          - pattern-either:
+                              - pattern-inside: |
+                                  $OBJ = pathlib.Path(...).$CHAIN(...)
+                                  ...
+                              - pattern-inside: |
+                                  $OBJ = (pathlib.Path(...) / $NAME).$CHAIN(...)
+                                  ...
+                  - metavariable-regex:
+                      metavariable: $CHAIN
+                      regex: ^(resolve|expanduser|absolute|joinpath|with_name|with_suffix|with_stem)$
+              - patterns:
                   - pattern: $OBJ.$METHOD(...)
                   - pattern-either:
                       - pattern-inside: |
@@ -105,6 +201,12 @@ rules:
       - pattern: shutil.copyfile(...)
       - pattern: shutil.copytree(...)
       - pattern: shutil.copyfileobj(...)
+      - pattern: os.open($PATH, <... os.O_WRONLY ...>, ...)
+      - pattern: os.open($PATH, <... os.O_RDWR ...>, ...)
+      - pattern: os.open($PATH, <... os.O_TRUNC ...>, ...)
+      - pattern: os.open(..., flags=<... os.O_WRONLY ...>, ...)
+      - pattern: os.open(..., flags=<... os.O_RDWR ...>, ...)
+      - pattern: os.open(..., flags=<... os.O_TRUNC ...>, ...)
       - patterns:
           - pattern-either:
               - pattern: open($PATH, $MODE, ...)
@@ -113,6 +215,42 @@ rules:
               - pattern: io.open(..., mode=$MODE, ...)
               - pattern: pathlib.Path(...).open($MODE, ...)
               - pattern: pathlib.Path(...).open(..., mode=$MODE, ...)
+              - pattern: (pathlib.Path(...) / $NAME).open($MODE, ...)
+              - pattern: (pathlib.Path(...) / $NAME).open(..., mode=$MODE, ...)
+              - patterns:
+                  - pattern-either:
+                      - pattern: pathlib.Path(...).$CHAIN(...).open($MODE, ...)
+                      - pattern: pathlib.Path(...).$CHAIN(...).open(..., mode=$MODE, ...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).open($MODE, ...)
+                      - pattern: (pathlib.Path(...) / $NAME).$CHAIN(...).open(..., mode=$MODE, ...)
+                      - patterns:
+                          - pattern-either:
+                              - pattern: $OBJ.open($MODE, ...)
+                              - pattern: $OBJ.open(..., mode=$MODE, ...)
+                          - pattern-either:
+                              - pattern-inside: |
+                                  $OBJ = pathlib.Path(...).$CHAIN(...)
+                                  ...
+                              - pattern-inside: |
+                                  $OBJ = (pathlib.Path(...) / $NAME).$CHAIN(...)
+                                  ...
+                  - metavariable-regex:
+                      metavariable: $CHAIN
+                      regex: ^(resolve|expanduser|absolute|joinpath|with_name|with_suffix|with_stem)$
+              - patterns:
+                  - pattern-either:
+                      - pattern: $OBJ.open($MODE, ...)
+                      - pattern: $OBJ.open(..., mode=$MODE, ...)
+                  - pattern-either:
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...)
+                          ...
+                      - pattern-inside: |
+                          $OBJ = pathlib.Path(...) / $NAME
+                          ...
+                      - pattern-inside: |
+                          def $F(..., $OBJ: pathlib.Path, ...):
+                              ...
           - metavariable-regex:
               metavariable: $MODE
               regex: ^["'](?=[rwbt+]*(?:w|\+))[rwbt+]+["']$

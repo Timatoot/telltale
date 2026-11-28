@@ -384,8 +384,18 @@ func docstring(fn *sitter.Node) *sitter.Node {
 		return nil
 	}
 	expr := firstChild(statement)
-	switch expr.Kind() {
-	case "string", "concatenated_string", "parenthesized_expression":
+	inner := expr
+	for depth := 0; inner != nil && inner.Kind() == "parenthesized_expression"; depth++ {
+		if depth >= maxDepth {
+			return nil
+		}
+		inner = firstChild(inner)
+	}
+	if inner == nil {
+		return nil
+	}
+	switch inner.Kind() {
+	case "string", "concatenated_string":
 		return expr
 	default:
 		return nil

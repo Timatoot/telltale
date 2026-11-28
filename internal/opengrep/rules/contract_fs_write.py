@@ -53,3 +53,26 @@ def filesystem(path, dest):
     (Path("catalog") / path).write_text("fixture")
     # ruleid: fs-write
     shutil.copymode(path, dest)
+
+
+def extra_path_and_os_open(path):
+    p = Path(path)
+    # ruleid: fs-overwrite
+    p.open("w")
+    # ruleid: fs-write
+    p.open("a")
+    # ok: fs-overwrite
+    p.open("r")
+    # ruleid: fs-overwrite
+    (Path("catalog") / path).open(mode="wb")
+    # ruleid: fs-overwrite
+    Path(path).resolve().write_text("x")
+    resolved = (Path("catalog") / path).resolve()
+    # ruleid: fs-delete
+    resolved.unlink()
+    # ruleid: fs-overwrite
+    os.open(path, os.O_WRONLY | os.O_CREAT)
+    # ok: fs-overwrite
+    os.open(path, os.O_RDONLY)
+    # ok: fs-overwrite
+    Path(path).read_text().replace("a", "b")

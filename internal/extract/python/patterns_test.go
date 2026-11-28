@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Timatoot/telltale/internal/model"
+	"github.com/Timatoot/telltale/internal/opengrep"
 )
 
 func toolIDs(tools []model.ToolFact) []string {
@@ -249,5 +250,88 @@ rebound = None
 	want := []model.HelperCall{{ToolID: "py:server.py:late", CalleeModule: "helper"}}
 	if !slices.Equal(result.CrossFileHelperCalls, want) || len(result.UnresolvedRegistrations)+len(result.ParseErrors) != 0 {
 		t.Fatalf("%+v", result)
+	}
+}
+
+func TestHelperClassMethodAndNonDictSchema(t *testing.T) {
+	result := extract(t, map[string]string{
+		"pkg/tools.py": server + `from .helper_mod import Client
+@app.tool()
+def via_class():
+    return Client.run()
+`,
+		"pkg/helper_mod.py": "class Client:\n    @staticmethod\n    def run(): pass\n",
+		"low.py": lowServerImports + `
+@srv.list_tools()
+def listing():
+    return [T(name="probe", inputSchema={"type": "object", "properties": {"p": PROP_SCHEMA}})]
+`,
+	})
+	wantHelpers := []model.HelperCall{{ToolID: "py:pkg/tools.py:via_class", CalleeModule: "pkg.helper_mod"}}
+	if !slices.Equal(result.CrossFileHelperCalls, wantHelpers) {
+		t.Fatalf("helpers = %+v, want %+v", result.CrossFileHelperCalls, wantHelpers)
+	}
+	wantGaps := []model.UnresolvedDescription{{ToolID: "py:low.py:probe", Field: "param:p.description"}}
+	if !slices.Equal(result.UnresolvedDescriptions, wantGaps) {
+		t.Fatalf("unresolved descriptions = %+v, want %+v", result.UnresolvedDescriptions, wantGaps)
+	}
+}
+
+func TestLowLevelArgumentKeyExtraction(t *testing.T) {
+	src := lowServerImports + `from pathlib import Path
+@srv.list_tools()
+async def listing():
+    return [
+        T(name="sub_path", inputSchema={"type": "object", "properties": {"p": {"type": "string"}}}),
+        T(name="dict_get", inputSchema={"type": "object", "properties": {"p": {"type": "string"}}}),
+        T(name="ambig", inputSchema={"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "string"}}}),
+    ]
+
+@srv.call_tool()
+async def dispatch(name, arguments):
+    if name == "sub_path":
+        target = Path(arguments["p"])
+        return target.read_text()
+    elif name == "dict_get":
+        return open(arguments.get("p")).read()
+    elif name == "ambig":
+        return open(arguments["a"] + arguments["b"]).read()
+`
+	loc := func(lineText, substr string) model.Location {
+		lines := strings.Split(src, "\n")
+		for idx, l := range lines {
+			if strings.Contains(l, lineText) {
+				col := strings.Index(l, substr) + 1
+				return model.Location{Path: "low.py", StartLine: idx + 1, StartColumn: col, EndLine: idx + 1, EndColumn: col + len(substr)}
+			}
+		}
+		t.Fatalf("missing %q / %q", lineText, substr)
+		return model.Location{}
+	}
+	snap, _ := snapshot(t, map[string]string{"low.py": src})
+	matches := []opengrep.SinkMatch{
+		{RuleID: "fs-read", TaintedParameter: "arguments", Span: loc("target.read_text()", "target"), PathValueSpan: loc(`Path(arguments["p"])`, `Path(arguments["p"])`)},
+		{RuleID: "fs-read", TaintedParameter: "arguments", Span: loc(`arguments.get("p")`, `arguments.get("p")`)},
+		{RuleID: "fs-read", TaintedParameter: "arguments", Span: loc(`arguments["a"] + arguments["b"]`, `arguments["a"] + arguments["b"]`)},
+	}
+	result, err := ExtractWithMatches(t.Context(), snap, matches)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantErrors := []model.ParseError{{Path: "low.py", Engine: "opengrep", Reason: "unresolved_taint_parameter"}}
+	if !slices.Equal(result.ParseErrors, wantErrors) {
+		t.Fatalf("parse_errors = %+v, want %+v", result.ParseErrors, wantErrors)
+	}
+	if len(result.Matches) != 3 {
+		t.Fatalf("matches = %+v", result.Matches)
+	}
+	if result.Matches[0].ToolID != "py:low.py:sub_path" || result.Matches[0].TaintedParameter != "p" {
+		t.Fatalf("sub_path match = %+v", result.Matches[0])
+	}
+	if result.Matches[1].ToolID != "py:low.py:dict_get" || result.Matches[1].TaintedParameter != "p" {
+		t.Fatalf("dict_get match = %+v", result.Matches[1])
+	}
+	if result.Matches[2].ToolID != "py:low.py:ambig" || result.Matches[2].TaintedParameter != "" {
+		t.Fatalf("ambig match = %+v", result.Matches[2])
 	}
 }

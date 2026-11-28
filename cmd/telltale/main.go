@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/Timatoot/telltale/internal/config"
 	"github.com/Timatoot/telltale/internal/extract/python"
@@ -122,8 +123,8 @@ func scanPython(ctx context.Context, repoPath string, analyzer sinkAnalyzer) (_ 
 		Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none", OpengrepVersion: version},
 		Inventory:     eval.Inventory, Findings: eval.Findings,
 		Coverage: model.Coverage{
-			FilesScanned: len(snap.Files) - len(sinks.FilesSkipped), FilesSkipped: append(snap.FilesSkipped, sinks.FilesSkipped...),
-			ToolsDiscovered: len(result.Tools), ParseErrors: append(result.ParseErrors, sinks.ParseErrors...),
+			FilesScanned: len(snap.Files) - len(sinks.FilesSkipped), FilesSkipped: slices.Concat(snap.FilesSkipped, sinks.FilesSkipped),
+			ToolsDiscovered: len(result.Tools), ParseErrors: slices.Concat(result.ParseErrors, sinks.ParseErrors),
 			UnresolvedDescriptions:  result.UnresolvedDescriptions,
 			UnresolvedRegistrations: result.UnresolvedRegistrations,
 			AnalysisLimits:          model.AnalysisLimits{CrossFileHelperCalls: result.CrossFileHelperCalls},

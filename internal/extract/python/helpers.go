@@ -109,16 +109,14 @@ func (f *sourceFile) recordHelper(ref helperReference, bound string) bool {
 		return false
 	}
 	qualified := bound + ref.suffix
-	last := strings.LastIndexByte(qualified, '.')
-	if last <= 0 {
-		return true
-	}
-	module := f.localModule(qualified[:last])
-	if module != "" {
-		if f.bodyModules[ref.body] == nil {
-			f.bodyModules[ref.body] = make(map[string]struct{})
+	for dot := strings.LastIndexByte(qualified, '.'); dot > 0; dot = strings.LastIndexByte(qualified[:dot], '.') {
+		if module := f.localModule(qualified[:dot]); module != "" {
+			if f.bodyModules[ref.body] == nil {
+				f.bodyModules[ref.body] = make(map[string]struct{})
+			}
+			f.bodyModules[ref.body][module] = struct{}{}
+			return true
 		}
-		f.bodyModules[ref.body][module] = struct{}{}
 	}
 	return true
 }

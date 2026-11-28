@@ -175,6 +175,8 @@ func TestAnnotations(t *testing.T) {
 		{"missing", "", model.Annotations{}, nil},
 		{"direct", "readOnlyHint=True, destructiveHint=False, openWorldHint=False", all, nil},
 		{"constructor", "annotations=ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)", all, nil},
+		{"annotations none", "annotations=None", model.Annotations{}, nil},
+		{"hint none", "annotations=ToolAnnotations(readOnlyHint=None, destructiveHint=False)", model.Annotations{DestructiveHint: &no}, nil},
 		{"variable", "annotations=hints", model.Annotations{}, allKeys},
 		{"dict", "annotations={'readOnlyHint':True}", model.Annotations{}, allKeys},
 		{"imported", "annotations=IMPORTED", model.Annotations{}, allKeys},
@@ -193,7 +195,11 @@ func TestAnnotations(t *testing.T) {
 				t.Fatalf("coverage = %+v", result.UnresolvedDescriptions)
 			}
 			for i, key := range tc.unknown {
-				want := model.UnresolvedDescription{ToolID: "py:a.py:tool", Field: "annotation:" + key}
+				toolID := "py:a.py:tool"
+				if tc.name == "splat" {
+					toolID = "py:a.py:?1"
+				}
+				want := model.UnresolvedDescription{ToolID: toolID, Field: "annotation:" + key}
 				if got := result.UnresolvedDescriptions[i]; got != want {
 					t.Fatalf("coverage record = %+v, want %+v", got, want)
 				}
@@ -207,15 +213,59 @@ func TestUnpackedDescription(t *testing.T) {
 def search():
     """Default description."""
 `})
-	if len(result.Tools) != 1 || result.Tools[0].DeclaredDescription != nil || result.Tools[0].DescriptionResolved {
+	if len(result.Tools) != 1 || result.Tools[0].ToolID != "py:tools.py:?1" || result.Tools[0].Name != "" ||
+		result.Tools[0].DeclaredDescription != nil || result.Tools[0].DescriptionResolved {
 		t.Fatalf("unpacked description: %+v", result)
+	}
+	wantRegs := []model.UnresolvedRegistration{{Path: "tools.py", Line: 3, Reason: "computed_name"}}
+	if !reflect.DeepEqual(result.UnresolvedRegistrations, wantRegs) {
+		t.Fatalf("unpacked registration gaps = %+v, want %+v", result.UnresolvedRegistrations, wantRegs)
 	}
 	var want []model.UnresolvedDescription
 	for _, field := range []string{"description", "annotation:readOnlyHint", "annotation:destructiveHint", "annotation:openWorldHint"} {
-		want = append(want, model.UnresolvedDescription{ToolID: "py:tools.py:search", Field: field})
+		want = append(want, model.UnresolvedDescription{ToolID: "py:tools.py:?1", Field: field})
 	}
 	if !reflect.DeepEqual(result.UnresolvedDescriptions, want) {
 		t.Fatalf("unpacked keyword gaps = %+v, want %+v", result.UnresolvedDescriptions, want)
+	}
+}
+
+func TestBareToolDecoratorAndParenthesizedStatements(t *testing.T) {
+	result := extract(t, map[string]string{"bare.py": server + `
+@app.tool
+def bare(path: str):
+    """Read a file."""
+    return path
+
+@app.tool()
+def expr_first(x: int):
+    (x + 1)
+    return x
+
+@app.tool()
+def concat_paren():
+    ("a" "b")
+`})
+	if len(result.ParseErrors) != 0 || len(result.UnresolvedRegistrations) != 0 || len(result.Tools) != 3 {
+		t.Fatalf("unexpected extraction: %+v", result)
+	}
+	bare := result.Tools[0]
+	if bare.ToolID != "py:bare.py:bare" || bare.Name != "bare" || !bare.DescriptionResolved ||
+		bare.DeclaredDescription == nil || *bare.DeclaredDescription != "Read a file." ||
+		len(bare.Parameters) != 1 || bare.Parameters[0].Name != "path" || bare.Parameters[0].DeclaredType != "str" {
+		t.Fatalf("bare tool = %+v", bare)
+	}
+	expr := result.Tools[1]
+	if expr.ToolID != "py:bare.py:expr_first" || !expr.DescriptionResolved || expr.DeclaredDescription != nil {
+		t.Fatalf("expr_first = %+v", expr)
+	}
+	concat := result.Tools[2]
+	if concat.ToolID != "py:bare.py:concat_paren" || concat.DescriptionResolved || concat.DeclaredDescription != nil {
+		t.Fatalf("concat_paren = %+v", concat)
+	}
+	wantGaps := []model.UnresolvedDescription{{ToolID: "py:bare.py:concat_paren", Field: "description"}}
+	if !reflect.DeepEqual(result.UnresolvedDescriptions, wantGaps) {
+		t.Fatalf("gaps = %+v, want %+v", result.UnresolvedDescriptions, wantGaps)
 	}
 }
 

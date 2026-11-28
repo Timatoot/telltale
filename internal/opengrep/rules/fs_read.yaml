@@ -26,6 +26,11 @@ rules:
                       ...
                   ...
                   $SERVER.add_tool($HANDLER, ...)
+              - pattern-inside: |
+                  def $HANDLER(..., $PARAM, ...):
+                      ...
+                  ...
+                  $SERVER.add_tool(..., fn=$HANDLER, ...)
           - focus-metavariable: $PARAM
     pattern-sinks:
       - patterns:
@@ -70,21 +75,91 @@ rules:
               - pattern: $PATH.read_bytes(...)
           - focus-metavariable: $PATH
     pattern-sanitizers:
-      # Focus on the receiver of the guarded return. A sibling branch or a
-      # later read of the same variable still receives its original taint.
+      # Guarded positive branch (supports return or with-open, and local or module-level ROOT).
+      # Use explicit single-statement forms inside the consequence branch so an else: branch is never matched.
       - patterns:
-          - patterns:
-              - pattern: |
-                  $ROOT = pathlib.Path("...").resolve()
-                  $PATH = ($ROOT / $NAME).resolve()
-                  if $PATH.is_relative_to($ROOT):
-                      return $READ
-              - focus-metavariable: $READ
           - pattern-either:
-              - pattern: $PATH.read_text()
-              - pattern: $PATH.read_bytes()
-              - pattern: $PATH.open()
-              - pattern: open($PATH)
-              - pattern: io.open($PATH)
+              - patterns:
+                  - pattern-either:
+                      - pattern: |
+                          $ROOT = pathlib.Path("...").resolve()
+                          ...
+                          $PATH = ($ROOT / $NAME).resolve()
+                          if $PATH.is_relative_to($ROOT):
+                              return $READ
+                      - pattern: |
+                          $ROOT = pathlib.Path("...").resolve()
+                          ...
+                          def $HANDLER(...):
+                              ...
+                              $PATH = ($ROOT / $NAME).resolve()
+                              if $PATH.is_relative_to($ROOT):
+                                  return $READ
+                      - pattern: |
+                          $ROOT = pathlib.Path("...").resolve()
+                          ...
+                          $PATH = ($ROOT / $NAME).resolve()
+                          if $PATH.is_relative_to($ROOT):
+                              with $READ as $F:
+                                  ...
+                      - pattern: |
+                          $ROOT = pathlib.Path("...").resolve()
+                          ...
+                          def $HANDLER(...):
+                              ...
+                              $PATH = ($ROOT / $NAME).resolve()
+                              if $PATH.is_relative_to($ROOT):
+                                  with $READ as $F:
+                                      ...
+                  - focus-metavariable: $READ
+          - pattern-either:
+              - pattern: $PATH.read_text(...)
+              - pattern: $PATH.read_bytes(...)
+              - pattern: $PATH.open(...)
+              - pattern: open($PATH, ...)
+              - pattern: io.open($PATH, ...)
+          - focus-metavariable: $PATH
+        exact: true
+      # Guarded early-exit check: if not $PATH.is_relative_to($ROOT): raise/return; ... <read>
+      - patterns:
+          - pattern-either:
+              - pattern-inside: |
+                  $ROOT = pathlib.Path("...").resolve()
+                  ...
+                  $PATH = ($ROOT / $NAME).resolve()
+                  if not $PATH.is_relative_to($ROOT):
+                      raise ...
+                  ...
+              - pattern-inside: |
+                  $ROOT = pathlib.Path("...").resolve()
+                  ...
+                  $PATH = ($ROOT / $NAME).resolve()
+                  if not $PATH.is_relative_to($ROOT):
+                      return ...
+                  ...
+              - pattern-inside: |
+                  $ROOT = pathlib.Path("...").resolve()
+                  ...
+                  def $HANDLER(...):
+                      ...
+                      $PATH = ($ROOT / $NAME).resolve()
+                      if not $PATH.is_relative_to($ROOT):
+                          raise ...
+                      ...
+              - pattern-inside: |
+                  $ROOT = pathlib.Path("...").resolve()
+                  ...
+                  def $HANDLER(...):
+                      ...
+                      $PATH = ($ROOT / $NAME).resolve()
+                      if not $PATH.is_relative_to($ROOT):
+                          return ...
+                      ...
+          - pattern-either:
+              - pattern: $PATH.read_text(...)
+              - pattern: $PATH.read_bytes(...)
+              - pattern: $PATH.open(...)
+              - pattern: open($PATH, ...)
+              - pattern: io.open($PATH, ...)
           - focus-metavariable: $PATH
         exact: true

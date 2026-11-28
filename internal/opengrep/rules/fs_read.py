@@ -136,3 +136,52 @@ def check_one_read_another(name, other):
     if candidate.is_relative_to(root):
         # ruleid: fs-read
         return Path(other).read_text()
+
+
+def kw_registered(path):
+    # ruleid: fs-read
+    return open(path)
+
+
+mcp.add_tool(fn=kw_registered)
+
+MODULE_ROOT = Path("/fixture/catalog").resolve()
+
+
+@mcp.tool()
+def confined_inverted_raise(name):
+    candidate = (MODULE_ROOT / name).resolve()
+    if not candidate.is_relative_to(MODULE_ROOT):
+        raise ValueError("outside")
+    # ok: fs-read
+    return candidate.read_text(encoding="utf-8")
+
+
+@mcp.tool()
+def confined_with_open(name):
+    root = Path("/fixture/catalog").resolve()
+    candidate = (root / name).resolve()
+    if candidate.is_relative_to(root):
+        # ok: fs-read
+        with open(candidate, "r", encoding="utf-8") as f:
+            return f.read()
+
+
+@mcp.tool()
+def unguarded_inverted_log(name):
+    root = Path("/fixture/catalog").resolve()
+    candidate = (root / name).resolve()
+    if not candidate.is_relative_to(root):
+        print("warning")
+    # ruleid: fs-read
+    return candidate.read_text()
+
+
+@mcp.tool()
+def inverted_wrong_root(name, other):
+    root = Path(other).resolve()
+    candidate = (root / name).resolve()
+    if not candidate.is_relative_to(root):
+        raise ValueError("outside")
+    # ruleid: fs-read
+    return candidate.read_text()

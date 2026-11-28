@@ -47,15 +47,12 @@ func (f *sourceFile) indexSinks(ctx context.Context, root *sitter.Node) string {
 		indexed := indexedSink{match: m}
 		if m.RuleID == "fs-read" {
 			// A dispatcher accepts one arguments dictionary. Recover a public
-			// parameter only from a literal key on that taint source.
-			path := node
+			// parameter only from literal keys on that taint source.
 			if propagated := spanNode(root, m.PathValueSpan); propagated != nil {
-				path = propagated
+				indexed.argumentKey = f.extractArgumentKey(propagated, m.TaintedParameter)
 			}
-			if path.Kind() == "subscript" && f.text(path.ChildByFieldName("value")) == m.TaintedParameter {
-				if key := f.literal(path.ChildByFieldName("subscript")); key != nil {
-					indexed.argumentKey = *key
-				}
+			if indexed.argumentKey == "" {
+				indexed.argumentKey = f.extractArgumentKey(node, m.TaintedParameter)
 			}
 			for depth := 0; node != nil; depth++ {
 				if depth > maxDepth {
@@ -74,6 +71,50 @@ func (f *sourceFile) indexSinks(ctx context.Context, root *sitter.Node) string {
 		f.callSinks[node.Id()] = append(f.callSinks[node.Id()], indexed)
 	}
 	return ""
+}
+
+func (f *sourceFile) extractArgumentKey(expr *sitter.Node, param string) string {
+	if expr == nil || param == "" {
+		return ""
+	}
+	keys := make(map[string]struct{})
+	f.collectArgumentKeys(expr, param, 0, keys)
+	if len(keys) != 1 {
+		return ""
+	}
+	for k := range keys {
+		return k
+	}
+	return ""
+}
+
+func (f *sourceFile) collectArgumentKeys(n *sitter.Node, param string, depth int, keys map[string]struct{}) {
+	if n == nil || depth > maxDepth || len(keys) > 1 {
+		return
+	}
+	switch n.Kind() {
+	case "subscript":
+		if f.text(n.ChildByFieldName("value")) == param {
+			if key := f.literal(n.ChildByFieldName("subscript")); key != nil {
+				keys[*key] = struct{}{}
+			}
+		}
+	case "call":
+		fn := n.ChildByFieldName("function")
+		if fn != nil && fn.Kind() == "attribute" &&
+			f.text(fn.ChildByFieldName("object")) == param &&
+			f.text(fn.ChildByFieldName("attribute")) == "get" {
+			if first := firstChild(n.ChildByFieldName("arguments")); first != nil &&
+				first.Kind() != "keyword_argument" && first.Kind() != "dictionary_splat" && first.Kind() != "list_splat" {
+				if key := f.literal(first); key != nil {
+					keys[*key] = struct{}{}
+				}
+			}
+		}
+	}
+	for child := range children(n) {
+		f.collectArgumentKeys(child, param, depth+1, keys)
+	}
 }
 
 func (f *sourceFile) observeSinks(call *sitter.Node, env *scope, state walkState) bool {

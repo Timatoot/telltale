@@ -110,6 +110,10 @@ func (a SinkAnalyzer) stage() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	parent, err = filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
 	stage, err := os.MkdirTemp(parent, "telltale-opengrep-*")
 	if err != nil {
 		return "", err
@@ -133,7 +137,7 @@ func command(ctx context.Context, stage string, limit int, partial bool, args ..
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "opengrep", args...)
 	cmd.Dir = stage
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
 	stdout := limitedOutput{limit: limit, cancel: cancel}

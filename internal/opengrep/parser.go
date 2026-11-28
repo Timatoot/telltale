@@ -109,6 +109,15 @@ func errorKind(raw json.RawMessage) string {
 	return name
 }
 
+var knownRuleIDs = map[string]bool{
+	"fs-write":     true,
+	"fs-delete":    true,
+	"fs-overwrite": true,
+	"exec":         true,
+	"network":      true,
+	"fs-read":      true,
+}
+
 func parseScan(data []byte, files []string, repoRel func(string) (string, bool)) (Result, error) {
 	var out scanOutput
 	if err := json.Unmarshal(data, &out); err != nil {
@@ -142,7 +151,10 @@ func parseScan(data []byte, files []string, repoRel func(string) (string, bool))
 			return Result{}, errors.New("match outside target manifest")
 		}
 		id := strings.TrimPrefix(hit.CheckID, "rules.")
-		if id == "" || hit.Start.Line < 1 || hit.Start.Col < 1 || hit.End.Col < 1 || hit.End.Line < hit.Start.Line || hit.End.Line == hit.Start.Line && hit.End.Col < hit.Start.Col {
+		if !knownRuleIDs[id] {
+			return Result{}, fmt.Errorf("unexpected rule ID %q", hit.CheckID)
+		}
+		if hit.Start.Line < 1 || hit.Start.Col < 1 || hit.End.Col < 1 || hit.End.Line < hit.Start.Line || hit.End.Line == hit.Start.Line && hit.End.Col < hit.Start.Col {
 			return Result{}, errors.New("invalid match ID or span")
 		}
 		m := SinkMatch{RuleID: id, Span: model.Location{Path: rel, StartLine: hit.Start.Line, StartColumn: hit.Start.Col, EndLine: hit.End.Line, EndColumn: hit.End.Col},
