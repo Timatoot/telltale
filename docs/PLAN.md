@@ -536,23 +536,27 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
 
 - **Depends on:** Slice 2, Slice 8, Slice 11
 - **Parallelizable with:** Slice 13
-- **Target files (4 total — 0 Modify, 4 Create):**
+- **Target files (5 total — 1 Modify, 4 Create):**
+  - `[MODIFY]` `internal/rules/engine.go` (shared rule metadata lookup)
   - `[CREATE]` `internal/verify/reconcile.go`
   - `[CREATE]` `internal/verify/argsynth.go`
   - `[CREATE]` `internal/verify/reconcile_test.go`
   - `[CREATE]` `internal/verify/argsynth_test.go`
 - **Tasks:**
-  1. [ ] Implement `internal/verify/reconcile.go` (`InventoryReconciler`):
+  1. [x] Implement `internal/verify/reconcile.go` (`InventoryReconciler`):
      - Joins static `[]ToolFact` with live `[]LiveTool` by registered tool name; duplicate static names → `coverage.ambiguous_joins` and `inconclusive` (`ambiguous_join`).
+     - Reject duplicate live names as a protocol violation. Preserve a live observation with an ambiguous static join under `live:<name>` for independent live-text findings.
      - Normalizes static resolved literals and live descriptions/parameter descriptions via `report.NormalizeDocstring` (no Unicode NFC/NFKC). Never compares unresolved descriptions or JSON-schema types.
      - Test a drift-only result with complete coverage: `POISON-RUNTIME-DRIFT` is medium and confirmed. The default high threshold yields exit 0. With `--fail-on medium --verified-only` the same finding yields exit 1 (SPEC §5).
      - Compare the sets of parameter names independent of declaration order, including additions, removals and renames. Compare resolved descriptions for shared names.
      - Emits `POISON-RUNTIME-DRIFT` (`origin: runtime`, `static_status: none`, `dynamic_status: confirmed`) on normalized text drift, and runs `rules.EvalPoisonText` over live text for runtime POISON findings.
      - Records live-only tools in `coverage.runtime_only_tools` (ID `live:<name>`) and static-only tools in `coverage.static_only_tools` without emitting findings for presence alone.
      - Sets `dynamic_status` on static POISON findings (`confirmed` if reproduced in live text, `not_reproduced` if absent, `skipped`/`tool_not_live` if tool absent, `inconclusive`/`description_unresolved` or `ambiguous_join` when uncomparable).
-  2. [ ] Implement `internal/verify/argsynth.go`: synthesize minimal required arguments from live `inputSchema` (`string` → FS payload for tainted param, `/workspace/seed/notes.txt` for path-like suffixes `path`/`file`/`dir`/`name`, else `"telltale"`; `integer`/`number` → `0`; `boolean` → `false`; `enum` → first item; `array` → `[]`; `object` → recurse depth ≤3). Reject `oneOf`/`anyOf`/`allOf`, unresolved `$ref`, or depth >3 with `ErrUnsupportedSchema` (`unsupported_schema`).
-  3. [ ] **[RISK-08 Test]** Write `internal/verify/reconcile_test.go` covering every item in `docs/ARCHITECTURE.md` §5 Row 5: FastMCP docstring reformatting (no finding), env-conditional static-only tool (coverage only), live-only benign tool (coverage only), live-only tool with bidi Unicode (runtime `POISON-INVISIBLE-UNICODE` finding), static vs live drift (`POISON-RUNTIME-DRIFT`), renamed parameter with identical description (drift), reordered parameters and type-only change (no drift), unresolved static description skipped cleanly, and ambiguous duplicate name.
-  4. [ ] **[RISK-11 Test]** Write `internal/verify/argsynth_test.go` covering every item in `docs/ARCHITECTURE.md` §5 Row 8: required/optional/enum/nested/path-like/empty schemas, plus `oneOf`/`anyOf`/`allOf`/`$ref`/depth>3 → `unsupported_schema`.
+  2. [x] Implement `internal/verify/argsynth.go`: synthesize minimal required arguments from live `inputSchema` (`string` → FS payload for tainted param, `/workspace/seed/notes.txt` for path-like suffixes `path`/`file`/`dir`/`name`, else `"telltale"`; `integer`/`number` → `0`; `boolean` → `false`; `enum` → first item; `array` → `[]`; `object` → recurse depth ≤3). Reject `oneOf`/`anyOf`/`allOf`, any `$ref` (including document-local references), or depth >3 with `ErrUnsupportedSchema` (`unsupported_schema`).
+     - [x] Required values, fixture paths, and unsupported-schema handling.
+     - [x] FS payload substitution for the exact required top-level string parameter. Preserve enum-first synthesis and ordinary defaults for nested fields with the same name.
+  3. [x] **[RISK-08 Test]** Write `internal/verify/reconcile_test.go` covering every item in `docs/ARCHITECTURE.md` §5 Row 5: FastMCP docstring reformatting (no finding), env-conditional static-only tool (coverage only), live-only benign tool (coverage only), live-only tool with bidi Unicode (runtime `POISON-INVISIBLE-UNICODE` finding), static vs live drift (`POISON-RUNTIME-DRIFT`), renamed parameter with identical description (drift), reordered parameters and type-only change (no drift), unresolved static description skipped cleanly, and ambiguous duplicate name.
+  4. [x] **[RISK-11 Test]** Write `internal/verify/argsynth_test.go` covering every item in `docs/ARCHITECTURE.md` §5 Row 8: required/optional/enum/nested/path-like/empty schemas, plus `oneOf`/`anyOf`/`allOf`/`$ref`/depth>3 → `unsupported_schema`.
 - **CLI Verification:**
   ```bash
   go test -race -count=1 ./internal/verify/... && golangci-lint run ./...

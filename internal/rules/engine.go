@@ -51,11 +51,20 @@ type Result struct {
 	Hypotheses []VerificationHypothesis
 }
 
+// FindingMetadata returns an owned copy of the catalog fields for a rule.
+func FindingMetadata(id string) (model.Finding, bool) {
+	r, ok := catalog[id]
+	if !ok {
+		return model.Finding{}, false
+	}
+	return model.Finding{ID: id, Family: r.family, Severity: r.severity, Title: r.title, Summary: r.summary,
+		Remediation: r.remediation, Mappings: model.Mappings{CWE: slices.Clone(r.cwe)}}, true
+}
+
 func staticFinding(id string, tool model.ToolFact, loc *model.Location, fingerprint string, evidence ...model.EvidenceItem) model.Finding {
-	r := catalog[id]
-	f := model.Finding{ID: id, Origin: model.OriginStatic, Family: r.family, Severity: r.severity, Title: r.title, Summary: r.summary,
-		Remediation: r.remediation, Confidence: model.ConfidenceMedium, StaticStatus: model.Suspected, DynamicStatus: model.NotRun,
-		ToolID: tool.ToolID, Location: loc, Fingerprint: fingerprint, Evidence: evidence, Mappings: model.Mappings{CWE: slices.Clone(r.cwe)}}
+	f, _ := FindingMetadata(id) // Called only with catalog IDs from rule evaluation.
+	f.Origin, f.Confidence, f.StaticStatus, f.DynamicStatus = model.OriginStatic, model.ConfidenceMedium, model.Suspected, model.NotRun
+	f.ToolID, f.Location, f.Fingerprint, f.Evidence = tool.ToolID, loc, fingerprint, evidence
 	if id == invisible {
 		f.StaticStatus, f.Confidence = model.Proven, model.ConfidenceHigh
 	}
