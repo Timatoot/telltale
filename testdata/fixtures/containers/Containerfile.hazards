@@ -1,0 +1,13 @@
+# Test harness only. BASE is the freshly built local Slice 17 fixture.
+ARG BASE
+FROM ${BASE}
+USER root
+RUN ["python3", "-c", "from pathlib import Path; p = Path('/opt/fixture-probe'); p.mkdir(); p.chmod(0o777)"]
+VOLUME /sneaky
+COPY <<'PY' /cache_probe.py
+from pathlib import Path
+
+# Simulate an application requiring a cache on the read-only image filesystem.
+Path("/opt/fixture-probe/cache").mkdir()
+PY
+CMD ["python3", "/cache_probe.py"]

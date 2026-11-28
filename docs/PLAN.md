@@ -641,18 +641,21 @@ Every security invariant, residual risk, and row of the Required Edge-Case Test 
   - `[CREATE]` `internal/sandbox/integration_test.go`
   - `[CREATE]` `internal/sandbox/cleanup_integration_test.go`
 - **Tasks:**
-  1. [ ] Create test-harness-only `testdata/fixtures/containers/Containerfile.base` (minimal local Python 3 image for running dynamic fixtures) and `Containerfile.hazards` (`USER root`, `VOLUME /sneaky`, read-only-sensitive probe script). Document clearly that `telltale` itself never builds images; only the `integration` test harness builds these test fixtures via `podman build`.
-  2. [ ] **[RISK-05 Integration Test]** Write `internal/sandbox/integration_test.go` (`//go:build integration`) testing real local Rootless Podman ≥ 5.0 (`crun`, cgroup v2):
+  1. [x] Create test-harness-only `testdata/fixtures/containers/Containerfile.base` (minimal local Python 3 image for running dynamic fixtures) and `Containerfile.hazards` (`USER root`, `VOLUME /sneaky`, read-only-sensitive probe script). Document clearly that `telltale` itself never builds images; only the `integration` test harness builds these test fixtures via `podman build`.
+  2. [x] **[RISK-05 Integration Test]** Write `internal/sandbox/integration_test.go` (`//go:build integration`) testing real local Rootless Podman ≥ 5.0 (`crun`, cgroup v2):
      - `--network=none` blocks outbound TCP/DNS, zero capabilities (`CapEff: 0000000000000000`), read-only rootfs refuses writes outside `/workspace` & `/tmp`.
      - Post-start cgroup limits (`memory.max`, `pids.max`, `cpu.max`) match requested values; fork-bomb fixture hits `pids-limit` cleanly without harming host.
      - Image hazards: `USER root` overridden to mapped non-root UID, `VOLUME /sneaky` ignored (`--image-volume=ignore`), missing writable cache dir on read-only rootfs maps to target crash (`inconclusive`), absent image exits `2`.
      - Host env isolation: use a disposable `XDG_CONFIG_HOME` and its normal containers.conf location. Run a clean baseline, then independent cases for `env_host=true` (unexpected key/value from the CLI environment) and one injected default mount. Assert the matching inspection failure before start for each case.
      - SELinux `:Z` relabeling applies strictly to fresh temp `/workspace` & `/restricted` dirs (host repo untouched).
-  3. [ ] **[RISK-06 Integration Test]** Write `internal/sandbox/cleanup_integration_test.go` (`//go:build integration`) testing zero orphaned containers (`podman ps -a --filter label=telltale.run=...`) and zero leftover temp dirs after:
+  3. [x] **[RISK-06 Integration Test]** Write `internal/sandbox/cleanup_integration_test.go` (`//go:build integration`) testing zero orphaned containers (`podman ps -a --filter label=telltale.run=...`) and zero leftover temp dirs after:
      - Normal exit, per-session timeout, `SIGINT`, double `SIGINT`.
      - Kill only the audit PID with `SIGKILL` at deterministic barriers after snapshot allocation, after create/before start, and during a running session. Poll within the teardown deadline for both an empty run-label query and absence of its host temp tree, without a subsequent audit or test-side cleanup masking leaks. Check guard exit. Independently check the running container’s runtime timeout and auto-removal.
      - Exercise the workspace limit during startup/handshake and inventory as well as an active call, and assert bounded session termination. Verify the watchdog attaches to FS sessions using a synthetic session lifecycle test.
      - Two concurrent `telltale` runs ensuring run A's teardown never removes run B's labeled container.
+- [ ] Run the CLI verification command below on local rootless Podman ≥ 5.0 with `crun`, cgroup v2, and `docker.io/library/python:3.12-alpine` already in local storage. Check off this item once the fixture images build and the live isolation and cleanup tests pass.
+  - All three live test groups stopped at `podman info` with exit 125, before either image built or any container assertion ran. Even with escalated execution, `newuidmap` reported `write to uid_map failed: Operation not permitted`.
+  - The build, race-enabled unit suite, and lint with and without the integration tag passed. A separate synthetic-runtime check verified guard exit and run-tree removal after killing the audit at the snapshot barrier.
 - **CLI Verification:**
   ```bash
   go test -tags=integration -race -count=1 ./internal/sandbox/... && golangci-lint run ./...
