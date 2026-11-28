@@ -139,7 +139,7 @@ Top-level object fields:
 * Tree-sitter and Opengrep both read only the snapshot, which eliminates file-set divergence and TOCTOU between engines. Snapshot paths are mapped back to repo-relative paths in all output. The snapshot is removed on exit.
 
 #### Opengrep Boundary
-* Invoked via `exec.CommandContext` with an explicit argument slice: `opengrep scan --config <temp-rules-dir> --json --quiet --disable-nosem --max-target-bytes <per-file cap> --timeout <sec> <snapshot-dir>` (`--enable-interfile` stays off in v1). `--disable-nosem` prevents target-authored `# nosemgrep` comments from suppressing matches.
+* Invoked via `exec.CommandContext` with an explicit argument slice: `opengrep scan --config <temp-rules-dir> --json --quiet --disable-nosem --max-target-bytes <per-file cap> --timeout <sec> --project-root <scan-dir> <scan-dir>` (`--enable-interfile` stays off in v1). The project root is the private fixture directory during preflight and the ingest snapshot during analysis, so file discovery works independently of Git. `--disable-nosem` prevents target-authored `# nosemgrep` comments from suppressing matches.
 * **Preflight self-test:** `opengrep --version` must fall within the supported range, and one scan of an embedded micro-fixture must succeed with the exact flag set and list the fixture in `paths.scanned`. Otherwise exit `2`.
 * **Exit code handling:**
   * `0`, and the documented partial-failure code for target parse errors (`3`), mean the JSON is parsed.

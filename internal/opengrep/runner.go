@@ -129,7 +129,9 @@ func (a SinkAnalyzer) stage() (string, error) {
 }
 
 func scan(ctx context.Context, stage, target string, partial bool) ([]byte, error) {
-	return command(ctx, stage, 64<<20, partial, "scan", "--config", filepath.Join(stage, "rules"), "--json", "--quiet", "--disable-nosem", "--max-target-bytes", "1048576", "--timeout", "30", target)
+	return command(ctx, stage, 64<<20, partial, "scan", "--config", filepath.Join(stage, "rules"),
+		"--json", "--quiet", "--disable-nosem", "--max-target-bytes", "1048576", "--timeout", "30",
+		"--project-root", target, target)
 }
 
 func command(ctx context.Context, stage string, limit int, partial bool, args ...string) ([]byte, error) {

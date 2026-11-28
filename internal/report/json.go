@@ -1,7 +1,6 @@
 package report
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,13 +14,39 @@ import (
 // RenderJSON builds a presentation copy. Keep the original bytes, spans and
 // ordering available for identity, evidence correlation and other reporters.
 func RenderJSON(input *model.ScanReport, canary string) ([]byte, error) {
+	p := presentation{canary: canary}
+	r, err := p.report(input)
+	if err != nil {
+		return nil, err
+	}
+	return marshalReport(r, canary)
+}
+
+func marshalReport(r any, canary string) ([]byte, error) {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("serialize report: %w", err)
+	}
+	if canary != "" {
+		// Check even trusted metadata and JSON keys. Marshal the needle with
+		// the same encoder so that JSON-escaped contents cannot slip through.
+		quoted, err := json.Marshal(canary)
+		if err != nil {
+			return nil, fmt.Errorf("encode redaction guard: %w", err)
+		}
+		return guardedOutput(append(data, '\n'), canary, string(quoted[1:len(quoted)-1]))
+	}
+	return append(data, '\n'), nil
+}
+
+// report returns an owned, sanitized and deterministically sorted presentation.
+func (p *presentation) report(input *model.ScanReport) (*model.ScanReport, error) {
 	if input == nil || input.SchemaVersion != model.SchemaVersion {
 		return nil, errors.New("expected a schema 1.0 report")
 	}
 	if code := input.Summary.AnalysisExitCode; code != 0 && code != 1 && code != 3 {
 		return nil, errors.New("invalid analysis exit code")
 	}
-	p := presentation{canary: canary}
 	r := *input
 	r.Tool.Name = p.ident(r.Tool.Name)
 	r.Tool.Version = p.ident(r.Tool.Version)
@@ -49,22 +74,7 @@ func RenderJSON(input *model.ScanReport, canary string) ([]byte, error) {
 	r.Summary.CountsByStaticStatus = counts(r.Summary.CountsByStaticStatus)
 	r.Summary.CountsByDynamicStatus = counts(r.Summary.CountsByDynamicStatus)
 	r.Sort()
-	data, err := json.MarshalIndent(r, "", "  ")
-	if err != nil {
-		return nil, fmt.Errorf("serialize report: %w", err)
-	}
-	if canary != "" {
-		// Check even trusted metadata and JSON keys. Marshal the needle with
-		// the same encoder so that JSON-escaped contents cannot slip through.
-		quoted, err := json.Marshal(canary)
-		if err != nil {
-			return nil, fmt.Errorf("encode redaction guard: %w", err)
-		}
-		if bytes.Contains(data, []byte(canary)) || bytes.Contains(data, quoted[1:len(quoted)-1]) {
-			return nil, errors.New("canary present in report")
-		}
-	}
-	return append(data, '\n'), nil
+	return &r, nil
 }
 
 func counts[K comparable](m map[K]int) map[K]int {
@@ -84,8 +94,9 @@ func project[T any](items []T, transform func(T) T) []T {
 }
 
 type presentation struct {
-	canary string
-	err    error
+	canary     string
+	singleLine bool
+	err        error
 }
 
 func (p *presentation) text(s string) string { return Sanitize(s, p.canary, maxFieldBytes) }
@@ -100,7 +111,13 @@ func (p *presentation) optionalIdent(s *string) *string {
 	return &clean
 }
 func (p *presentation) multiline(s string) string {
-	return SanitizeMultiline(s, p.canary, maxFieldBytes)
+	return p.prose(s, maxFieldBytes)
+}
+func (p *presentation) prose(s string, limit int) string {
+	if p.singleLine {
+		return Sanitize(s, p.canary, limit)
+	}
+	return SanitizeMultiline(s, p.canary, limit)
 }
 func (p *presentation) optionalMultiline(s *string) *string {
 	if s == nil {
@@ -228,7 +245,7 @@ func (p *presentation) finding(f model.Finding) model.Finding {
 	f.Remediation = p.multiline(f.Remediation)
 	f.Evidence = project(f.Evidence, func(e model.EvidenceItem) model.EvidenceItem {
 		e.Detail = p.text(e.Detail)
-		e.RedactedExcerpt = SanitizeMultiline(e.RedactedExcerpt, p.canary, excerptBytes)
+		e.RedactedExcerpt = p.prose(e.RedactedExcerpt, excerptBytes)
 		return e
 	})
 	f.Mappings.CWE = project(f.Mappings.CWE, p.ident)

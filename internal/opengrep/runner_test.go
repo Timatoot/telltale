@@ -24,7 +24,7 @@ if [ "$1" = "--version" ]; then
     echo "${VERSION:-2.0.0}"
     exit 0
 fi
-[ "$#" = 11 ]
+[ "$#" = 13 ]
 [ "$1" = scan ]
 [ "$2" = --config ]
 [ "$3" = "$PWD/rules" ]
@@ -32,7 +32,9 @@ fi
 [ ! -e "$3/fs_read.py" ]
 [ "${PWD%/*}" = "$RUN_DIR" ]
 [ "$4 $5 $6 $7 $8 $9 ${10}" = "--json --quiet --disable-nosem --max-target-bytes 1048576 --timeout 30" ]
-target=${11}
+[ "${11}" = "--project-root" ]
+target=${13}
+[ "${12}" = "$target" ]
 ` + body
 	if err := os.WriteFile(filepath.Join(dir, "opengrep"), []byte(script), 0o700); err != nil { //nolint:gosec // G306: private synthetic executable in t.TempDir().
 		t.Fatal(err)

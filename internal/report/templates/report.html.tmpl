@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Target.RepoName}} · telltale audit</title>
+<style>
+:root { color-scheme:light; font:100%/1.55 system-ui,sans-serif; color:#19352e; background:#f5f6f2 }
+body { margin:0 auto; max-width:64rem; padding:2rem clamp(1rem,5vw,4rem); overflow-wrap:anywhere }
+header { border-top:4px solid #276451; padding:1rem 0 }
+h1 { font: bold clamp(2rem,5vw,3.5rem)/1.1 Georgia,serif; margin:.4rem 0 1rem }
+h2 { margin:2rem 0 .6rem } h3,p { margin:.5rem 0 }
+article,details { background:white; border:1px solid #c4cfc7; padding:1rem; margin:.6rem 0 }
+.metrics { display:flex; flex-wrap:wrap; gap:.6rem 2rem; padding:.8rem 0; border-block:1px solid #98aba0 }
+code,small { font-size:.9em } summary { cursor:pointer } blockquote { margin:.6rem 0; padding-left:1rem; border-left:3px solid #adbfb1 }
+</style>
+</head>
+<body><header><span>telltale / {{.Target.Mode}} audit</span><h1>{{.Target.RepoName}}</h1>
+<div class="metrics"><strong>{{status .Summary.AnalysisExitCode}}</strong><span>Gating findings: {{.Summary.GatingCount}}</span>
+<span>Files scanned: {{.Coverage.FilesScanned}}</span><span>Tools discovered: {{.Coverage.ToolsDiscovered}}</span></div></header>
+<main><section><h2>Findings ({{len .Findings}})</h2>
+{{range .Findings}}<article><small>{{.Severity}} · <code>{{.ID}}</code>{{if .Gating}} · gates policy{{end}}</small>
+<h3>{{.Title}}</h3><code>{{.ToolID}}{{with .Location}} · {{.Path}}:{{.StartLine}}:{{.StartColumn}}{{end}}</code>
+<p>{{.Summary}}</p><p>Static: {{.StaticStatus}} · Dynamic: {{.DynamicStatus}}{{with .DynamicReason}} ({{.}}){{end}}</p>
+{{range .Evidence}}<blockquote>{{.Kind}} · {{.Source}} · {{.Detail}}{{with .RedactedExcerpt}}<br><code>{{.}}</code>{{end}}</blockquote>{{end}}
+{{with .Remediation}}<p><strong>Remediation</strong> {{.}}</p>{{end}}</article>{{else}}<p>No findings reported.</p>{{end}}</section>
+<section><h2>Coverage</h2><p>{{if .Summary.CoverageComplete}}Complete{{else}}Incomplete{{end}}</p>
+{{with warnings .Coverage}}<ul>{{range .}}<li>{{.}}</li>{{end}}</ul>{{end}}
+{{with .Coverage.AnalysisLimits.CrossFileHelperCalls}}<h3>Analysis limits</h3><ul>{{range .}}<li><code>{{.ToolID}}</code> calls into <code>{{.CalleeModule}}</code></li>{{end}}</ul>{{end}}</section>
+{{with .Inventory}}<section><h2>Tool inventory</h2>{{range .}}<details><summary>{{.Name}} · <code>{{.ToolID}}</code></summary>
+{{with .DeclaredDescription}}<p>{{.}}</p>{{end}}{{with .LiveDescription}}<p>Live description: {{.}}</p>{{end}}
+{{with .Parameters}}<ul>{{range .}}<li><code>{{.Name}} {{.DeclaredType}}</code>{{with .Description}} · {{.}}{{end}}</li>{{end}}</ul>{{end}}
+</details>{{end}}</section>{{end}}</main></body></html>

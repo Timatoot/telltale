@@ -15,7 +15,7 @@
 1. User runs `telltale audit <repo-path>` with optional CLI flags (`--json`, `--sarif`, `--html`, `--fail-on`, `--verified-only`, `--strict`).
 2. `telltale` inspects the repository without importing, building, or executing any target code, and without invoking `git` or any other tool that reads repository-controlled configuration.
 3. Ingestion copies the in-budget regular `.py` files into a private per-run snapshot directory; every later static stage reads only that snapshot (see ARCHITECTURE §4.4 "Repository Snapshot Boundary").
-4. Opengrep evaluates embedded v1 rules against the snapshot and returns sink spans and single-file taint evidence.
+4. Opengrep uses the snapshot directory as its project root (`--project-root`), evaluates embedded v1 rules there, and returns sink spans and single-file taint evidence.
 5. Static extraction parses the same snapshot for MCP registrations, docstrings, parameter schemas and annotations. It correlates sink spans with tool handlers and records unparseable files and unresolved registrations as coverage gaps.
 6. `telltale` prints a terminal summary, writes any requested artifacts atomically (Canonical JSON, SARIF 2.1.0, standalone HTML), and exits according to the exit-code contract (§5).
 

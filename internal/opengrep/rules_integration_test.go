@@ -4,6 +4,7 @@ package opengrep
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,20 @@ import (
 )
 
 func TestOpengrepIntegration(t *testing.T) {
+	// An engine that falls back to a directory walk can still return all
+	// matches after attempting Git. Observe the invocation independently.
+	bin := t.TempDir()
+	marker := filepath.Join(bin, "git-called")
+	t.Setenv("GIT_CALL_MARKER", marker)
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\n: > \"$GIT_CALL_MARKER\"\nexit 1\n"), 0o700); err != nil { //nolint:gosec // Private test executable.
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Cleanup(func() {
+		if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("expected no Git invocation during preflight or analysis, marker stat: %v", err)
+		}
+	})
 	a := analyzer(t)
 	if _, err := a.Preflight(t.Context()); err != nil {
 		t.Fatal(err)

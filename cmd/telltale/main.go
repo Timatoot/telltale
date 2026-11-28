@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 
 	"github.com/Timatoot/telltale/internal/config"
 	"github.com/Timatoot/telltale/internal/extract/python"
@@ -43,82 +44,65 @@ func runAudit(args []string, stdout, stderr io.Writer, analyzer sinkAnalyzer) in
 		return exitFatalError
 	}
 
-	if err := rejectUnfinishedModes(cfg); err != nil {
+	if cfg.Verify {
+		_, _ = fmt.Fprintln(stderr, "telltale: --verify mode is not yet implemented")
+		return exitFatalError
+	}
+	output, err := prepareAudit(context.Background(), cfg, analyzer, cfg.NoColor || !terminalOutput(stdout))
+	if err == nil {
+		err = publish(output.artifacts, func() error {
+			_, err := stdout.Write(output.terminal)
+			return err
+		})
+	}
+	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
 		return exitFatalError
 	}
+	return output.code
+}
 
+func terminalOutput(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+type auditOutput struct {
+	code      int
+	terminal  []byte
+	artifacts []artifact
+}
+
+// Finish rendering and close the snapshot before publishing any results.
+func prepareAudit(ctx context.Context, cfg config.Config, analyzer sinkAnalyzer, noColor bool) (_ auditOutput, err error) {
 	repoName, err := repositoryName(cfg.RepoPath)
 	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
-		return exitFatalError
+		return auditOutput{}, err
 	}
-
-	scan, err := scanPython(context.Background(), cfg.RepoPath, analyzer)
-	if err != nil {
-		_, _ = fmt.Fprintf(stderr, "telltale: %s\n", report.Sanitize(err.Error(), "", 4096))
-		return exitFatalError
-	}
-
-	scan.Target = model.Target{RepoName: repoName, Mode: "static"}
-	scan.ApplyPolicy(model.Policy{FailOn: model.Severity(cfg.FailOn), VerifiedOnly: cfg.VerifiedOnly, Strict: cfg.Strict})
-	if cfg.JSONPath != "" {
-		payload, err := report.RenderJSON(&scan, "")
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "telltale: render json report: %s\n", report.Sanitize(err.Error(), "", 4096))
-			return exitFatalError
-		}
-
-		if err := writeFileAtomic(cfg.JSONPath, payload); err != nil {
-			_, _ = fmt.Fprintf(stderr, "telltale: write json report: %s\n", report.Sanitize(err.Error(), "", 4096))
-			return exitFatalError
-		}
-	}
-
-	status := "pass"
-	switch scan.Summary.AnalysisExitCode {
-	case 1:
-		status = "policy_violation"
-	case 3:
-		status = "incomplete"
-	}
-	_, _ = fmt.Fprintf(stdout, "telltale audit: repo=%s mode=static findings=%d status=%s\n", report.SanitizeIdentifier(repoName, "", 4096), len(scan.Findings), status)
-	return scan.Summary.AnalysisExitCode
-}
-
-func rejectUnfinishedModes(cfg config.Config) error {
-	if cfg.Verify {
-		return errors.New("--verify mode is not yet implemented")
-	}
-	if cfg.SARIFPath != "" {
-		return errors.New("--sarif output is not yet implemented")
-	}
-	if cfg.HTMLPath != "" {
-		return errors.New("--html output is not yet implemented")
-	}
-	return nil
-}
-
-func scanPython(ctx context.Context, repoPath string, analyzer sinkAnalyzer) (_ model.ScanReport, err error) {
 	version, err := analyzer.Preflight(ctx)
 	if err != nil {
-		return model.ScanReport{}, err
+		return auditOutput{}, err
 	}
-	snap, err := ingest.CreateSnapshot(ctx, repoPath, "")
+	snap, err := ingest.CreateSnapshot(ctx, cfg.RepoPath, "")
 	if err != nil {
-		return model.ScanReport{}, err
+		return auditOutput{}, err
 	}
 	defer func() { err = errors.Join(err, snap.Close()) }()
 	sinks, err := analyzer.Analyze(ctx, snap)
 	if err != nil {
-		return model.ScanReport{}, err
+		return auditOutput{}, err
 	}
 	result, err := python.ExtractWithMatches(ctx, snap, sinks.Matches)
 	if err != nil {
-		return model.ScanReport{}, err
+		return auditOutput{}, err
 	}
 	eval := rules.Evaluate(result.Tools, result.Matches, false)
-	return model.ScanReport{
+	scan := model.ScanReport{
+		Target:        model.Target{RepoName: repoName, Mode: "static"},
 		SchemaVersion: model.SchemaVersion,
 		Tool:          model.Tool{Name: "telltale", Version: "dev", RuntimeBackend: "none", OpengrepVersion: version},
 		Inventory:     eval.Inventory, Findings: eval.Findings,
@@ -129,7 +113,33 @@ func scanPython(ctx context.Context, repoPath string, analyzer sinkAnalyzer) (_ 
 			UnresolvedRegistrations: result.UnresolvedRegistrations,
 			AnalysisLimits:          model.AnalysisLimits{CrossFileHelperCalls: result.CrossFileHelperCalls},
 		},
-	}, nil
+	}
+	scan.ApplyPolicy(model.Policy{FailOn: model.Severity(cfg.FailOn), VerifiedOnly: cfg.VerifiedOnly, Strict: cfg.Strict})
+	out := auditOutput{code: scan.Summary.AnalysisExitCode}
+	out.terminal, err = report.RenderTerminal(&scan, "", noColor)
+	if err != nil {
+		return auditOutput{}, err
+	}
+	for _, format := range []struct {
+		name, path string
+		render     func(*model.ScanReport, string) ([]byte, error)
+	}{
+		{"json", cfg.JSONPath, report.RenderJSON},
+		{"sarif", cfg.SARIFPath, func(r *model.ScanReport, token string) ([]byte, error) {
+			return report.RenderSARIF(r, token, snap.Root().FS())
+		}},
+		{"html", cfg.HTMLPath, report.RenderHTML},
+	} {
+		if format.path == "" {
+			continue
+		}
+		data, err := format.render(&scan, "")
+		if err != nil {
+			return auditOutput{}, fmt.Errorf("render %s report: %w", format.name, err)
+		}
+		out.artifacts = append(out.artifacts, artifact{name: format.name, path: format.path, data: data})
+	}
+	return out, nil
 }
 
 func repositoryName(repoPath string) (string, error) {
@@ -145,35 +155,127 @@ func repositoryName(repoPath string) (string, error) {
 	return name, nil
 }
 
-func writeFileAtomic(destPath string, data []byte) error {
-	dir := filepath.Dir(destPath)
-	tmp, err := os.CreateTemp(dir, ".telltale-*.tmp")
+type artifact struct {
+	name, path   string
+	data         []byte
+	temp, backup string
+	published    bool
+}
+
+func (a *artifact) stage() error {
+	f, err := os.CreateTemp(filepath.Dir(a.path), ".telltale-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp file in destination directory: %w", err)
+		return fmt.Errorf("create temp file: %w", err)
 	}
-	tmpPath := tmp.Name()
-	cleanup := true
+	a.temp = f.Name()
+	if _, err = f.Write(a.data); err == nil {
+		err = f.Sync()
+	}
+	return errors.Join(err, f.Close())
+}
+
+func (a *artifact) replace() error {
+	// Link the old directory entry itself, including a symlink, without opening
+	// its target. Link is exclusive: a colliding backup is never ours to delete.
+	info, err := os.Lstat(a.path)
+	switch {
+	case err == nil && (info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0):
+		backup := a.temp + ".bak"
+		if err := os.Link(a.path, backup); err != nil {
+			return fmt.Errorf("back up destination: %w", err)
+		}
+		a.backup = backup
+	case err == nil && !info.IsDir():
+		return errors.New("destination is a special file")
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("inspect destination: %w", err)
+	}
+	if err := os.Rename(a.temp, a.path); err != nil {
+		return fmt.Errorf("publish staged file: %w", err)
+	}
+	a.temp = ""
+	a.published = true
+	return nil
+}
+
+func (a *artifact) finish(rollback bool) error {
+	var err error
+	if rollback && a.published {
+		if a.backup != "" {
+			// On a restore failure retain the original backup for recovery.
+			err = os.Rename(a.backup, a.path)
+			a.backup = ""
+		} else {
+			err = os.Remove(a.path)
+		}
+	}
+	if a.backup != "" {
+		err = errors.Join(err, os.Remove(a.backup))
+	}
+	if a.temp != "" {
+		err = errors.Join(err, os.Remove(a.temp))
+	}
+	return err
+}
+
+// Serialize cooperating publishers while their backups are needed. Directory
+// locks need no persistent lockfiles and are released when the descriptors close.
+func publish(files []artifact, writeTerminal func() error) (err error) {
+	seen := make(map[string]bool)
+	var locked []*os.File
 	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpPath)
+		for _, dir := range locked {
+			_ = dir.Close()
 		}
 	}()
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
+	defer func() {
+		rollback := err != nil
+		for i := len(files) - 1; i >= 0; i-- {
+			err = errors.Join(err, files[i].finish(rollback))
+		}
+	}()
+	for i := range files {
+		a := &files[i]
+		dir, name := filepath.Split(a.path)
+		if name == "" || name == "." || name == ".." {
+			return fmt.Errorf("write %s report: expected a file destination", a.name)
+		}
+		if dir == "" {
+			dir = "."
+		}
+		// Resolve parent aliases before testing whether two flags name the same entry.
+		parent, err := filepath.EvalSymlinks(dir)
+		if err != nil {
+			return fmt.Errorf("write %s report: resolve directory: %w", a.name, err)
+		}
+		parent, err = filepath.Abs(parent)
+		if err != nil {
+			return fmt.Errorf("write %s report: resolve directory: %w", a.name, err)
+		}
+		a.path = filepath.Join(parent, name)
+		if seen[a.path] {
+			return errors.New("report destinations must be distinct")
+		}
+		seen[a.path] = true
+		if !slices.ContainsFunc(locked, func(f *os.File) bool { return f.Name() == parent }) {
+			f, err := os.Open(parent) //nolint:gosec // User-selected output directory, used only for locking.
+			if err != nil {
+				return fmt.Errorf("write %s report: open directory: %w", a.name, err)
+			}
+			locked = append(locked, f)
+			// Nonblocking acquisition also avoids deadlocks across destination directories.
+			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+				return fmt.Errorf("write %s report: lock directory: %w", a.name, err)
+			}
+		}
+		if err := a.stage(); err != nil {
+			return fmt.Errorf("write %s report: %w", a.name, err)
+		}
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp file: %w", err)
+	for i := range files {
+		if err := files[i].replace(); err != nil {
+			return fmt.Errorf("write %s report: %w", files[i].name, err)
+		}
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		return fmt.Errorf("rename temp file to destination: %w", err)
-	}
-
-	cleanup = false
-	return nil
+	return writeTerminal()
 }
