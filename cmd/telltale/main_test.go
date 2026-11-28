@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/Timatoot/telltale/internal/ingest"
 	"github.com/Timatoot/telltale/internal/model"
@@ -529,5 +531,59 @@ func TestArtifactPublication(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestPublishWaitsForDirectoryLock(t *testing.T) {
+	t.Parallel()
+
+	repoDir := t.TempDir()
+	outDir := t.TempDir()
+	dirFile, err := os.Open(outDir) //nolint:gosec // Test directory created via t.TempDir().
+	if err != nil {
+		t.Fatalf("open output dir: %v", err)
+	}
+	if err := syscall.Flock(int(dirFile.Fd()), syscall.LOCK_EX); err != nil {
+		_ = dirFile.Close()
+		t.Fatalf("acquire directory lock: %v", err)
+	}
+
+	unlocked := make(chan struct{})
+	go func() {
+		defer close(unlocked)
+		time.Sleep(50 * time.Millisecond)
+		_ = syscall.Flock(int(dirFile.Fd()), syscall.LOCK_UN)
+		_ = dirFile.Close()
+	}()
+
+	jsonPath := filepath.Join(outDir, "report.json")
+	var stdout, stderr bytes.Buffer
+	code := runFixture([]string{"audit", repoDir, "--json", jsonPath}, &stdout, &stderr)
+	<-unlocked
+	if code != exitPass {
+		t.Fatalf("exit code = %d, want %d (stderr: %s)", code, exitPass, stderr.String())
+	}
+
+	outRoot, err := os.OpenRoot(outDir)
+	if err != nil {
+		t.Fatalf("open output dir root: %v", err)
+	}
+	defer func() {
+		_ = outRoot.Close()
+	}()
+	raw, err := outRoot.ReadFile("report.json")
+	if err != nil {
+		t.Fatalf("read JSON artifact: %v", err)
+	}
+	var got model.ScanReport
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal JSON artifact: %v", err)
+	}
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("read output dir: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "report.json" {
+		t.Fatalf("unexpected files in output dir: %v", entries)
 	}
 }

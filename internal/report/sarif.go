@@ -93,6 +93,10 @@ func RenderSARIF(input *model.ScanReport, canary string, snapshot fs.FS) ([]byte
 		var msg strings.Builder
 		fmt.Fprintf(&msg, "%s (%s): %s", f.Title, f.ToolID, f.Summary)
 		for _, e := range f.Evidence {
+			if e.RedactedExcerpt == "" {
+				fmt.Fprintf(&msg, "\n%s: %s", e.Source, e.Detail)
+				continue
+			}
 			fmt.Fprintf(&msg, "\n%s: %s %s", e.Source, e.Detail, e.RedactedExcerpt)
 		}
 		result := sarifResult{RuleID: f.ID, Level: sarifLevel(f.Severity), Message: sarifText{msg.String()},

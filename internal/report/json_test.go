@@ -173,6 +173,11 @@ func TestJSONRejectsInvalidPathsAndFatalExit(t *testing.T) {
 	if data, err := RenderJSON(&r, ""); err == nil || data != nil {
 		t.Fatal("rendered fatal exit code")
 	}
+	r = emptyReport()
+	r.Target.Mode = "other"
+	if data, err := RenderJSON(&r, ""); err == nil || data != nil {
+		t.Fatal("rendered invalid target mode")
+	}
 }
 
 func TestJSONPreservesStructuredIdentifiersAndMultilineProse(t *testing.T) {

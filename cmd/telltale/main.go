@@ -222,6 +222,8 @@ func (a *artifact) finish(rollback bool) error {
 // locks need no persistent lockfiles and are released when the descriptors close.
 func publish(files []artifact, writeTerminal func() error) (err error) {
 	seen := make(map[string]bool)
+	parentOwner := make(map[string]string)
+	var parents []string
 	var locked []*os.File
 	defer func() {
 		for _, dir := range locked {
@@ -257,19 +259,31 @@ func publish(files []artifact, writeTerminal func() error) (err error) {
 			return errors.New("report destinations must be distinct")
 		}
 		seen[a.path] = true
-		if !slices.ContainsFunc(locked, func(f *os.File) bool { return f.Name() == parent }) {
-			f, err := os.Open(parent) //nolint:gosec // User-selected output directory, used only for locking.
-			if err != nil {
-				return fmt.Errorf("write %s report: open directory: %w", a.name, err)
-			}
-			locked = append(locked, f)
-			// Nonblocking acquisition also avoids deadlocks across destination directories.
-			if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-				return fmt.Errorf("write %s report: lock directory: %w", a.name, err)
+		if _, exists := parentOwner[parent]; !exists {
+			parentOwner[parent] = a.name
+			parents = append(parents, parent)
+		}
+	}
+	slices.Sort(parents)
+	for _, parent := range parents {
+		f, err := os.Open(parent) //nolint:gosec // User-selected output directory, used only for locking.
+		if err != nil {
+			return fmt.Errorf("write %s report: open directory: %w", parentOwner[parent], err)
+		}
+		locked = append(locked, f)
+		for {
+			err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+			if !errors.Is(err, syscall.EINTR) {
+				break
 			}
 		}
-		if err := a.stage(); err != nil {
-			return fmt.Errorf("write %s report: %w", a.name, err)
+		if err != nil {
+			return fmt.Errorf("write %s report: lock directory: %w", parentOwner[parent], err)
+		}
+	}
+	for i := range files {
+		if err := files[i].stage(); err != nil {
+			return fmt.Errorf("write %s report: %w", files[i].name, err)
 		}
 	}
 	for i := range files {

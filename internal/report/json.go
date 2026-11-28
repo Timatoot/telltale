@@ -47,6 +47,9 @@ func (p *presentation) report(input *model.ScanReport) (*model.ScanReport, error
 	if code := input.Summary.AnalysisExitCode; code != 0 && code != 1 && code != 3 {
 		return nil, errors.New("invalid analysis exit code")
 	}
+	if input.Target.Mode != "static" && input.Target.Mode != "verify" {
+		return nil, errors.New("invalid target mode")
+	}
 	r := *input
 	r.Tool.Name = p.ident(r.Tool.Name)
 	r.Tool.Version = p.ident(r.Tool.Version)

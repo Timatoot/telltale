@@ -25,6 +25,10 @@ func coverageWarnings(c model.Coverage) []string {
 		warnings = append(warnings, fmt.Sprintf("Skipped %s (%s)", s.Path, s.Reason))
 	}
 	for _, e := range c.ParseErrors {
+		if e.Path == "" {
+			warnings = append(warnings, fmt.Sprintf("%s: %s", e.Engine, e.Reason))
+			continue
+		}
 		warnings = append(warnings, fmt.Sprintf("%s %s: %s", e.Engine, e.Path, e.Reason))
 	}
 	for _, u := range c.UnresolvedRegistrations {
@@ -86,6 +90,10 @@ func RenderTerminal(input *model.ScanReport, canary string, noColor bool) ([]byt
 		fmt.Fprintln(&out)
 		fmt.Fprintf(&out, "  %s\n", f.Summary)
 		for _, e := range f.Evidence {
+			if e.RedactedExcerpt == "" {
+				fmt.Fprintf(&out, "  %s: %s\n", e.Source, e.Detail)
+				continue
+			}
 			fmt.Fprintf(&out, "  %s: %s %s\n", e.Source, e.Detail, e.RedactedExcerpt)
 		}
 	}

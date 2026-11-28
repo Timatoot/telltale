@@ -154,3 +154,80 @@ func TestSARIFURIIdentifiesOriginalFile(t *testing.T) {
 		t.Fatalf("artifact URI %q", got)
 	}
 }
+
+func TestReporterFormattingDynamicReasonAndCanaryGuard(t *testing.T) {
+	r, snapshot := reporterFixture()
+	reason := model.ToolError
+	r.Findings[0].DynamicStatus = model.Inconclusive
+	r.Findings[0].DynamicReason = &reason
+	r.Findings[0].Evidence = append(r.Findings[0].Evidence, model.EvidenceItem{
+		Kind:   model.EvidenceDeclared,
+		Source: model.SourceTreeSitter,
+		Detail: "readOnlyHint=true",
+	})
+
+	terminal, err := RenderTerminal(&r, testCanary, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	htmlOut, err := RenderHTML(&r, testCanary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sarifOut, err := RenderSARIF(&r, testCanary, snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(terminal), "Coverage: opengrep: scan-wide warning") || strings.Contains(string(terminal), "opengrep :") {
+		t.Fatalf("unexpected terminal scan-wide warning formatting: %s", terminal)
+	}
+	if !strings.Contains(string(htmlOut), "<li>opengrep: scan-wide warning</li>") || strings.Contains(string(htmlOut), "opengrep :") {
+		t.Fatalf("unexpected HTML scan-wide warning formatting: %s", htmlOut)
+	}
+
+	if !strings.Contains(string(terminal), "  tree-sitter: readOnlyHint=true\n") || strings.Contains(string(terminal), "  tree-sitter: readOnlyHint=true \n") {
+		t.Fatalf("unexpected terminal empty-excerpt formatting: %q", string(terminal))
+	}
+	if !strings.Contains(string(terminal), "dynamic_status=inconclusive (tool_error)") {
+		t.Fatalf("terminal missing dynamic_reason: %s", terminal)
+	}
+	if !strings.Contains(string(htmlOut), "Dynamic: inconclusive (tool_error)") {
+		t.Fatalf("HTML missing dynamic_reason: %s", htmlOut)
+	}
+
+	var log sarifLog
+	if err := json.Unmarshal(sarifOut, &log); err != nil {
+		t.Fatal(err)
+	}
+	var checkedEmptyExcerpt bool
+	for _, res := range log.Runs[0].Results {
+		if res.RuleID != "FS-PATH-TRAVERSAL" {
+			continue
+		}
+		if res.Properties["dynamic_reason"] != "tool_error" {
+			t.Fatalf("SARIF missing dynamic_reason property: %+v", res.Properties)
+		}
+		if !strings.Contains(res.Message.Text, "\ntree-sitter: readOnlyHint=true") || strings.Contains(res.Message.Text, "readOnlyHint=true ") {
+			t.Fatalf("unexpected SARIF empty-excerpt formatting: %q", res.Message.Text)
+		}
+		checkedEmptyExcerpt = true
+	}
+	if !checkedEmptyExcerpt {
+		t.Fatal("missing FS-PATH-TRAVERSAL result in SARIF")
+	}
+
+	for _, needle := range []string{testCanary, "<synthetic>&"} {
+		bad, snap := reporterFixture()
+		bad.Findings[0].ID = needle
+		if out, err := RenderTerminal(&bad, needle, true); err == nil || out != nil || strings.Contains(err.Error(), needle) {
+			t.Fatalf("RenderTerminal did not fail closed for needle %q: %v", needle, err)
+		}
+		if out, err := RenderHTML(&bad, needle); err == nil || out != nil || strings.Contains(err.Error(), needle) {
+			t.Fatalf("RenderHTML did not fail closed for needle %q: %v", needle, err)
+		}
+		if out, err := RenderSARIF(&bad, needle, snap); err == nil || out != nil || strings.Contains(err.Error(), needle) {
+			t.Fatalf("RenderSARIF did not fail closed for needle %q: %v", needle, err)
+		}
+	}
+}
